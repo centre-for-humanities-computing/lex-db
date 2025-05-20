@@ -1,5 +1,6 @@
 """Configuration settings for Lex DB."""
 
+from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,14 +11,14 @@ load_dotenv()
 
 class Settings(BaseSettings):
     """Application settings."""
-    
+
     # Database settings
-    DATABASE_URL: str
-    
+    DATABASE_URL: Path = Path("db/lex.db")
+
     # API settings
     APP_NAME: str = "Lex DB API"
     DEBUG: bool = False
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
