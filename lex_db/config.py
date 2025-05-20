@@ -9,13 +9,7 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    """Application settings.
-    
-    Attributes:
-        database_url: Path to the SQLite database file.
-        app_name: Name of the application.
-        debug: Whether to run in debug mode.
-    """
+    """Application settings."""
     
     # Database settings
     DATABASE_URL: str
@@ -32,9 +26,5 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    """Get application settings.
-    
-    Returns:
-        Settings: Application settings.
-    """
+    """Get application settings."""
     return Settings()

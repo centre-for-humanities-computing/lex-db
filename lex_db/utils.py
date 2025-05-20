@@ -1,18 +1,40 @@
 """Utility functions for Lex DB."""
 
+import logging
 from typing import List
 
-def split_document_into_chunks(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """Split a document into chunks of text with specified size and overlap.
+# Configure logger
+logger = logging.getLogger("lex_db")
+
+def get_logger():
+    """Get the application logger."""
+    return logger
+
+def configure_logging(debug: bool = False):
+    """Configure logging for the application.    """
+    level = logging.DEBUG if debug else logging.INFO
     
-    Args:
-        text: The text to split into chunks
-        chunk_size: The maximum size of each chunk in characters
-        overlap: The number of characters to overlap between chunks
+    # Set up console logging
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # Remove existing handlers to avoid duplicates
+    for hdlr in root_logger.handlers[:]:
+        root_logger.removeHandler(hdlr)
         
-    Returns:
-        List of text chunks
-    """
+    root_logger.addHandler(handler)
+    
+    # Configure lex_db logger
+    lex_db_logger = logging.getLogger("lex_db")
+    lex_db_logger.setLevel(level)
+
+def split_document_into_chunks(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """Split a document into chunks of text with specified size and overlap.    """
     if not text:
         return []
         
