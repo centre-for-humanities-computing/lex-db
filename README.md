@@ -48,7 +48,7 @@ This will start the FastAPI server at `http://0.0.0.0:8000`.
 
 - `GET /`: Health check endpoint
 - `GET /api/tables`: List all tables in the database
-- More endpoints coming soon...
+- `POST /api/vector-search`: Does top-k search on a given vector index for a given query text
 
 ### API Documentation
 

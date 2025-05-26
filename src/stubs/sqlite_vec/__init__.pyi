@@ -1,0 +1,16 @@
+"""Type stubs for sqlite_vec module."""
+
+import numpy.typing as npt
+import sqlite3
+from _typeshed import Incomplete
+from sqlite3 import Connection
+from pathlib import Path
+
+__version__: str
+__version_info__: Incomplete
+
+def loadable_path() -> Path: ...
+def load(conn: sqlite3.Connection) -> None: ...
+def serialize_float32(vector: list[float]) -> bytes: ...
+def serialize_int8(vector: list[int]) -> bytes: ...
+def register_numpy(db: Connection, name: str, array: npt.NDArray) -> None: ...
