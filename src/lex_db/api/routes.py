@@ -3,9 +3,10 @@
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 
-from lex_db.utils import get_logger
-from lex_db.embeddings import EmbeddingModel
-from lex_db.database import get_db_connection, search_vector_index
+from src.lex_db.utils import get_logger
+from src.lex_db.embeddings import EmbeddingModel
+from src.lex_db.database import get_db_connection
+from src.lex_db.vector_store import search_vector_index
 
 logger = get_logger()
 router = APIRouter(prefix="/api", tags=["API"])

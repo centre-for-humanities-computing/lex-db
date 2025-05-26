@@ -1,8 +1,8 @@
 """Embedding generation utilities for vector search in Lex DB."""
 
 from enum import Enum
-
-from lex_db.utils import get_logger
+import numpy as np
+from src.lex_db.utils import get_logger
 
 logger = get_logger()
 
@@ -31,7 +31,7 @@ def get_embedding_dimensions(model_choice: EmbeddingModel) -> int:
 _model_cache: dict[EmbeddingModel, object] = {}
 
 
-def get_embedding_model(model_choice: EmbeddingModel) -> object:
+def get_local_embedding_model(model_choice: EmbeddingModel) -> object:
     """Get a cached embedding model instance."""
     if model_choice not in _model_cache:
         if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
@@ -41,6 +41,8 @@ def get_embedding_model(model_choice: EmbeddingModel) -> object:
             _model_cache[model_choice] = SentenceTransformer(
                 "intfloat/multilingual-e5-large-instruct"
             )
+        else:
+            raise ValueError(f"Local model not supported: {model_choice}")
 
     return _model_cache[model_choice]
 
@@ -50,33 +52,33 @@ def generate_embeddings(
 ) -> list[list[float]]:
     """Generate embeddings for a list of texts using the specified model."""
     if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
-        logger.info(f"Generating MOCK embeddings for {len(texts)} texts")
-        # Return a list of unique dummy embeddings for testing
+        logger.debug(f"Generating MOCK embeddings for {len(texts)} texts")
+        # Return a list of random dummy embeddings for testing
         return [
-            [float(i + 1) / 10.0] * get_embedding_dimensions(model_choice)
-            for i, _ in enumerate(texts)
+            np.random.random_sample(
+                get_embedding_dimensions(EmbeddingModel.MOCK_MODEL)
+            ).tolist()
+            for _ in texts
         ]
 
     elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_embedding_model(model_choice)
+        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
         formatted_texts = [f"passage: {text}" for text in texts]
 
-        logger.info(
+        logger.debug(
             f"Generating embeddings for {len(texts)} texts using E5 Multilingual model"
         )
         # Use getattr to safely access encode method
         encode_method = getattr(model, "encode", None)
         if encode_method is None:
-            # Fallback mechanism if encode method doesn't exist
-            return [[0.0] * get_embedding_dimensions(model_choice) for _ in texts]
+            raise ValueError(f"No encode method for local model: {model_choice}")
 
         embeddings = encode_method(formatted_texts, normalize_embeddings=True)
 
-        # Convert to list if not already a list
         if hasattr(embeddings, "tolist"):
             embeddings_list = embeddings.tolist()
             return [list(map(float, emb)) for emb in embeddings_list]
-        # Ensure we're returning the correct type
+
         return [list(map(float, emb)) for emb in embeddings]
 
     elif model_choice == EmbeddingModel.OPENAI_ADA_002:
@@ -102,9 +104,7 @@ def generate_embeddings(
             return [item.embedding for item in response.data]
 
         except ImportError:
-            raise ImportError(
-                "OpenAI package not installed. Install with 'pip install openai'."
-            )
+            raise ImportError("OpenAI package not installed. Install with 'uv sync'.")
         except Exception as e:
             raise ValueError(f"Error generating OpenAI embeddings: {str(e)}")
 
@@ -116,28 +116,4 @@ def generate_query_embedding(
     query_text: str, model_choice: EmbeddingModel
 ) -> list[float]:
     """Generate embedding for a search query."""
-    if model_choice == EmbeddingModel.MOCK_MODEL:
-        logger.info(f"Generating MOCK query embedding for: {query_text}")
-        # Return a fixed dummy query embedding
-        return [0.1, 0.2, 0.3, 0.4][: get_embedding_dimensions(model_choice)]
-
-    elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_embedding_model(model_choice)
-        formatted_query = f"query: {query_text}"
-
-        # Use getattr to safely access encode method
-        encode_method = getattr(model, "encode", None)
-        if encode_method is None:
-            # Fallback mechanism if encode method doesn't exist
-            return [0.0] * get_embedding_dimensions(model_choice)
-
-        embedding = encode_method(formatted_query, normalize_embeddings=True)
-
-        # Convert to list if not already a list
-        if hasattr(embedding, "tolist"):
-            embedding_list = embedding.tolist()
-            return list(map(float, embedding_list))
-        # Ensure we're returning the correct type
-        return list(map(float, embedding))
-    else:
-        return generate_embeddings([query_text], model_choice)[0]
+    return generate_embeddings([query_text], model_choice)[0]

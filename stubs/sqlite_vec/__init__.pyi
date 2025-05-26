@@ -1,6 +1,0 @@
-"""Type stubs for sqlite_vec module."""
-
-import sqlite3
-
-def load(connection: sqlite3.Connection) -> None: ...
-def register_vector_functions(connection: sqlite3.Connection) -> None: ...

@@ -9,13 +9,21 @@ install:
 	@echo "--- 🚀 Installing project dependencies ---"
 	uv sync
 
-run:
+install-dev:
+	@echo "--- 🚀 Installing development dependencies ---"
+	uv sync --dev
+
+run-dev: install-dev
+	@echo "--- ▶️ Running the application in dev mode ---"
+	uv run main.py
+
+run: install
 	@echo "--- ▶️ Running the application ---"
 	uv run main.py
 
 static-type-check:
 	@echo "--- 🔍 Running static type check ---"
-	uv run mypy .
+	uv run mypy . --explicit-package-bases
 
 lint:
 	@echo "--- 🧹 Formatting and linting codebase ---"

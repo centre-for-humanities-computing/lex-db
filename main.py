@@ -5,9 +5,9 @@ from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from lex_db.config import get_settings
-from lex_db.database import get_db_info, verify_db_exists
-from lex_db.api.routes import router as api_router
+from src.lex_db.config import get_settings
+from src.lex_db.database import get_db_info, verify_db_exists
+from src.lex_db.api.routes import router as api_router
 
 
 def create_app() -> FastAPI:
