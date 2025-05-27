@@ -13,11 +13,16 @@ install-dev:
 	@echo "--- 🚀 Installing development dependencies ---"
 	uv sync --dev
 
-run-dev: install-dev
+generate-openapi:
+	@echo "--- 📜 Generating OpenAPI schema ---"
+	uv run generate_openapi.py main:app --out openapi/openapi.yaml
+	@echo "OpenAPI schema generated successfully."
+
+run-dev: install-dev generate-openapi
 	@echo "--- ▶️ Running the application in dev mode ---"
 	uv run main.py
 
-run: install
+run: install generate-openapi
 	@echo "--- ▶️ Running the application ---"
 	uv run main.py
 
@@ -35,12 +40,13 @@ lint-check:
 	uv run ruff format . --check
 	uv run ruff check .
 
+
 test:
 	@echo "--- 🧪 Running tests ---"
 	# Pytest will discover tests in the project (e.g., in a 'tests/' directory or files named test_*.py)
 	uv run pytest
 
-pr: static-type-check lint-check test
+pr: generate-openapi static-type-check lint-check test
 	@echo "--- ✅ All PR checks passed successfully ---"
 	@echo "Ready to make a PR!"
 

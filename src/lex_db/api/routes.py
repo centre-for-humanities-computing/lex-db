@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from src.lex_db.utils import get_logger
 from src.lex_db.embeddings import EmbeddingModel
-from src.lex_db.database import get_db_connection
+from src.lex_db.database import get_db_connection, search_lex_fts
 from src.lex_db.vector_store import search_vector_index
 
 logger = get_logger()
@@ -63,4 +63,39 @@ async def vector_search(request: VectorSearchRequest) -> dict[str, list]:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error in vector search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+class FullTextSearchRequest(BaseModel):
+    """Full-text search request model."""
+
+    query: str
+    limit: int = 50
+    offset: int = 0
+
+
+@router.post("/search")
+async def full_text_search(request: FullTextSearchRequest) -> dict[str, object]:
+    """Search lexicon entries using full-text search."""
+    try:
+        if not request.query.strip():
+            raise ValueError("Query cannot be empty")
+
+        # Validate pagination parameters
+        if request.limit < 1 or request.limit > 100:
+            raise ValueError("Limit must be between 1 and 100")
+
+        if request.offset < 0:
+            raise ValueError("Offset must be non-negative")
+
+        logger.info(f"Full-text search for: {request.query}")
+        results = search_lex_fts(
+            query=request.query, limit=request.limit, offset=request.offset
+        )
+        return results
+    except ValueError as e:
+        logger.error(f"Validation error in full-text search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in full-text search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")

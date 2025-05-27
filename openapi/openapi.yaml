@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: Lex DB API
+  description: A wrapper around a SQLite database for encyclopedia articles with vector
+    and full-text search
+  version: 0.1.0
+paths:
+  /:
+    get:
+      tags:
+      - Health
+      summary: Health Check
+      description: "Health check endpoint.\n\nReturns:\n    dict: Health check information."
+      operationId: health_check__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check  Get
+  /api/tables:
+    get:
+      tags:
+      - API
+      summary: Get Tables
+      description: Get a list of tables in the database.
+      operationId: get_tables_api_tables_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    type: string
+                  type: array
+                type: object
+                title: Response Get Tables Api Tables Get
+  /api/vector-search:
+    post:
+      tags:
+      - API
+      summary: Vector Search
+      description: Search a vector index for similar content to the query text.
+      operationId: vector_search_api_vector_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorSearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items: {}
+                  type: array
+                type: object
+                title: Response Vector Search Api Vector Search Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/search:
+    post:
+      tags:
+      - API
+      summary: Full Text Search
+      description: Search lexicon entries using full-text search.
+      operationId: full_text_search_api_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FullTextSearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Full Text Search Api Search Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    FullTextSearchRequest:
+      properties:
+        query:
+          type: string
+          title: Query
+        limit:
+          type: integer
+          title: Limit
+          default: 50
+        offset:
+          type: integer
+          title: Offset
+          default: 0
+      type: object
+      required:
+      - query
+      title: FullTextSearchRequest
+      description: Full-text search request model.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    VectorSearchRequest:
+      properties:
+        vector_index_name:
+          type: string
+          title: Vector Index Name
+        query_text:
+          type: string
+          title: Query Text
+        embedding_model_choice:
+          type: string
+          title: Embedding Model Choice
+        top_k:
+          type: integer
+          title: Top K
+          default: 5
+      type: object
+      required:
+      - vector_index_name
+      - query_text
+      - embedding_model_choice
+      title: VectorSearchRequest
+      description: Vector search request model.
