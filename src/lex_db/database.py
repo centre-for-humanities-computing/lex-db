@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 import sqlite3
+from pydantic import BaseModel
 import sqlite_vec
 from contextlib import contextmanager
 from typing import Generator
@@ -91,19 +92,37 @@ def get_db_info() -> dict:
         }
 
 
-def search_lex_fts(
-    query: str, limit: int = 50, offset: int = 0
-) -> dict[str, object]:
+class FullTextSearchResult(BaseModel):
+    """Single result from a full-text search."""
+
+    id: int
+    xhtml_md: str
+    rank: float
+
+
+class FullTextSearchResults(BaseModel):
+    """Result of a full-text search."""
+
+    entries: list[FullTextSearchResult]
+    total: int
+    query: str
+    limit: int
+
+
+def search_lex_fts(query: str, limit: int = 50) -> FullTextSearchResults:
     """
     Perform full-text search on lex entries using FTS5.
     """
     if not query or not query.strip():
-        return {"entries": [], "total": 0, "query": query}
+        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
 
     # Keep Danish characters (æ, ø, å) and basic punctuation
-    sanitized_query = re.sub(r'["\-:*^()\[\]{}|+&]', ' ', query.strip())
+    sanitized_query = re.sub(r'["\-:*^()\[\]{}|+&]', " ", query.strip())
     # Remove multiple spaces and strip
-    sanitized_query = re.sub(r'\s+', ' ', sanitized_query).strip()
+    sanitized_query = re.sub(r"\s+", " ", sanitized_query).strip()
+
+    if not sanitized_query:
+        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -128,25 +147,27 @@ def search_lex_fts(
             FROM fts_articles
             WHERE fts_articles MATCH ?
             ORDER BY rank
-            LIMIT ? OFFSET ?
+            LIMIT ?
         """,
-            (sanitized_query, limit, offset),
+            (
+                sanitized_query,
+                limit,
+            ),
         )
 
         entries = []
         for row in cursor.fetchall():
             entries.append(
-                {
-                    "id": row[0],
-                    "xhtml_md": row[1],
-                    "rank": row[2],
-                }
+                FullTextSearchResult(
+                    id=row[0],
+                    xhtml_md=row[1],
+                    rank=row[2],
+                )
             )
 
-        return {
-            "entries": entries,
-            "total": total,
-            "query": query,
-            "limit": limit,
-            "offset": offset,
-        }
+        return FullTextSearchResults(
+            entries=entries,
+            total=total,
+            query=query,
+            limit=limit,
+        )

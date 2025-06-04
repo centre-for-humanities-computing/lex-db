@@ -3,6 +3,8 @@
 import json
 import sqlite3
 from datetime import datetime
+
+from pydantic import BaseModel
 from src.lex_db.utils import get_logger, split_document_into_chunks
 from src.lex_db.embeddings import (
     EmbeddingModel,
@@ -110,13 +112,29 @@ def remove_article_from_vector_index(
     logger.info(f"Removed article {article_rowid} from index {vector_index_name}.")
 
 
+class VectorSearchResult(BaseModel):
+    """Result of a vector search."""
+
+    id_in_index: int
+    source_article_id: str
+    chunk_seq: int
+    chunk_text: str
+    distance: float
+
+
+class VectorSearchResults(BaseModel):
+    """Result of a vector search."""
+
+    results: list[VectorSearchResult]
+
+
 def search_vector_index(
     db_conn: sqlite3.Connection,
     vector_index_name: str,
     query_text: str,
     embedding_model_choice: EmbeddingModel,
     top_k: int = 5,
-) -> list[dict[str, object]]:
+) -> VectorSearchResults:
     """Search a vector index for similar content to the query text."""
     cursor = db_conn.cursor()
 
@@ -139,17 +157,17 @@ def search_vector_index(
 
     # Format results
     formatted_results = [
-        {
-            "id_in_index": res[0],
-            "source_article_id": res[1],
-            "chunk_seq": res[2],
-            "chunk_text": res[3],
-            "distance": res[4],
-        }
+        VectorSearchResult(
+            id_in_index=res[0],
+            source_article_id=res[1],
+            chunk_seq=res[2],
+            chunk_text=res[3],
+            distance=res[4],
+        )
         for res in results
     ]
 
-    return formatted_results
+    return VectorSearchResults(results=formatted_results)
 
 
 def update_vector_index(

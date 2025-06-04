@@ -61,9 +61,9 @@ def db_conn(
 
     # Patch get_db_connection to return our test connection
     from contextlib import contextmanager
-    
+
     @contextmanager
-    def mock_get_db_connection():
+    def mock_get_db_connection() -> Generator[sqlite3.Connection, None, None]:
         yield test_conn
 
     monkeypatch.setattr("src.lex_db.database.get_db_connection", mock_get_db_connection)
@@ -282,14 +282,14 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
     top_k = 2
     results = search_vector_index(db_conn, index_name, query_text, model_choice, top_k)
 
-    assert len(results) == top_k
+    assert len(results.results) == top_k
     if results:
-        for item in results:
-            assert item["source_article_id"] in [article1_id, article2_id, article3_id]
-            assert "id_in_index" in item
-            assert "source_article_id" in item
-            assert "chunk_seq" in item
-            assert "distance" in item  # sqlite-vec provides this
+        for item in results.results:
+            assert item.source_article_id in [article1_id, article2_id, article3_id]
+            assert item.id_in_index is not None
+            assert item.source_article_id is not None
+            assert item.chunk_seq is not None
+            assert item.distance is not None  # sqlite-vec provides this
 
 
 def test_updated_article_in_vector_index(db_conn: sqlite3.Connection) -> None:
@@ -345,26 +345,26 @@ def test_updated_article_in_vector_index(db_conn: sqlite3.Connection) -> None:
 def test_create_fts_tables(db_conn: sqlite3.Connection) -> None:
     """Test creating FTS5 tables and triggers."""
     create_fts_tables(db_conn)
-    
+
     cursor = db_conn.cursor()
-    
+
     # Check that FTS table was created
     cursor.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_articles'"
     )
     assert cursor.fetchone() is not None
-    
+
     # Check that triggers were created
     expected_triggers = [
-        'articles_fts_insert',
-        'articles_fts_delete', 
-        'articles_fts_update'
+        "articles_fts_insert",
+        "articles_fts_delete",
+        "articles_fts_update",
     ]
-    
+
     for trigger_name in expected_triggers:
         cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
-            (trigger_name,)
+            (trigger_name,),
         )
         assert cursor.fetchone() is not None
 
@@ -373,16 +373,16 @@ def test_populate_fts_tables(db_conn: sqlite3.Connection) -> None:
     """Test populating FTS tables with existing data."""
     create_fts_tables(db_conn)
     populate_fts_tables(db_conn)
-    
+
     cursor = db_conn.cursor()
-    
+
     # Check that FTS table was populated
     cursor.execute("SELECT COUNT(*) FROM fts_articles")
     fts_count = cursor.fetchone()[0]
-    
+
     cursor.execute("SELECT COUNT(*) FROM articles")
     articles_count = cursor.fetchone()[0]
-    
+
     assert fts_count == articles_count
     assert fts_count > 0
 
@@ -391,7 +391,7 @@ def test_verify_fts_setup(db_conn: sqlite3.Connection) -> None:
     """Test FTS setup verification."""
     create_fts_tables(db_conn)
     populate_fts_tables(db_conn)
-    
+
     # Should not raise any exceptions
     verify_fts_setup(db_conn)
 
@@ -399,160 +399,145 @@ def test_verify_fts_setup(db_conn: sqlite3.Connection) -> None:
 def test_search_lex_fts_basic(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test basic full-text search functionality."""
     results = search_lex_fts("test", limit=10)
-    
-    assert "entries" in results
-    assert "total" in results
-    assert "query" in results
-    assert results["query"] == "test"
-    assert results["total"] > 0
-    assert len(results["entries"]) > 0
-    
+
+    assert results.query == "test"
+    assert results.total > 0
+    assert len(results.entries) > 0
+    assert results.limit == 10
     # Check result structure
-    for entry in results["entries"]:
-        assert "id" in entry
-        assert "xhtml_md" in entry
-        assert "rank" in entry
+    for entry in results.entries:
+        assert entry.id is not None
+        assert entry.xhtml_md is not None
+        assert entry.rank is not None
 
 
 def test_search_lex_fts_empty_query(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test search with empty query."""
     results = search_lex_fts("")
-    
-    assert results["entries"] == []
-    assert results["total"] == 0
-    assert results["query"] == ""
+
+    assert results.entries == []
+    assert results.total == 0
+    assert results.query == ""
 
 
 def test_search_lex_fts_no_results(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test search with query that returns no results."""
     results = search_lex_fts("nonexistentword12345")
-    
-    assert results["entries"] == []
-    assert results["total"] == 0
-    assert results["query"] == "nonexistentword12345"
+
+    assert results.entries == []
+    assert results.total == 0
+    assert results.query == "nonexistentword12345"
 
 
 def test_search_lex_fts_danish_characters(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test search with Danish characters."""
     results = search_lex_fts("æøå")
-    
-    assert results["total"] > 0
-    assert len(results["entries"]) > 0
-    
+
+    assert results.total > 0
+    assert len(results.entries) > 0
+
     # Should find the Danish article
-    found_danish = any("Danish" in entry.get("xhtml_md", "") for entry in results["entries"])
+    found_danish = any("æøå" in entry.xhtml_md for entry in results.entries)
     assert found_danish
 
 
-def test_search_lex_fts_special_characters(db_conn_with_fts: sqlite3.Connection) -> None:
+def test_search_lex_fts_special_characters(
+    db_conn_with_fts: sqlite3.Connection,
+) -> None:
     """Test search with special characters that should be sanitized."""
     # These characters should be cleaned and not cause errors
     special_queries = [
         'test"article',
-        'test-article',
-        'test:article',
-        'test*article',
-        'test^article',
-        'test(article)',
-        'test[article]',
-        'test{article}',
-        'test|article',
-        'test+article',
-        'test&article'
+        "test-article",
+        "test:article",
+        "test*article",
+        "test^article",
+        "test(article)",
+        "test[article]",
+        "test{article}",
+        "test|article",
+        "test+article",
+        "test&article",
     ]
-    
+
     for query in special_queries:
         results = search_lex_fts(query)
-        # Should not raise errors and should return valid structure
-        assert "entries" in results
-        assert "total" in results
-        assert "query" in results
-
-
-def test_search_lex_fts_pagination(db_conn_with_fts: sqlite3.Connection) -> None:
-    """Test search pagination."""
-    # Search with limit 1
-    results_page1 = search_lex_fts("article", limit=1, offset=0)
-    assert len(results_page1["entries"]) <= 1
-    assert results_page1["limit"] == 1
-    assert results_page1["offset"] == 0
-    
-    # Search with offset
-    results_page2 = search_lex_fts("article", limit=1, offset=1)
-    assert results_page2["limit"] == 1
-    assert results_page2["offset"] == 1
-    
-    # If we have multiple results, pages should be different
-    if results_page1["total"] > 1:
-        assert results_page1["entries"] != results_page2["entries"]
+        assert results.total > 0, f"Query '{query}' should return results"
 
 
 def test_fts_triggers_insert(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test that FTS triggers work on INSERT."""
     cursor = db_conn_with_fts.cursor()
-    
+
     # Get initial count
     cursor.execute("SELECT COUNT(*) FROM fts_articles")
     initial_count = cursor.fetchone()[0]
-    
+
     # Insert new article
     cursor.execute(
         "INSERT INTO articles (title, xhtml_md) VALUES (?, ?)",
-        ("New Test Article", "# New Test Article\n\nThis is a new article for testing FTS triggers.")
+        (
+            "New Test Article",
+            "# New Test Article\n\nThis is a new article for testing FTS triggers.",
+        ),
     )
     db_conn_with_fts.commit()
-    
+
     # Check FTS table was updated
     cursor.execute("SELECT COUNT(*) FROM fts_articles")
     new_count = cursor.fetchone()[0]
-    
+
     assert new_count == initial_count + 1
-    
+
     # Verify we can search for the new content
     results = search_lex_fts("new article")
-    found_new = any("New Test Article" in entry.get("xhtml_md", "") for entry in results["entries"])
+    found_new = any("New Test Article" in entry.xhtml_md for entry in results.entries)
     assert found_new
 
 
 def test_fts_triggers_update(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test that FTS triggers work on UPDATE."""
     cursor = db_conn_with_fts.cursor()
-    
+
     # Update an existing article
     cursor.execute(
         "UPDATE articles SET xhtml_md = ? WHERE id = 1",
-        ("# Updated Article\n\nThis content has been updated with unique text for testing.",)
+        (
+            "# Updated Article\n\nThis content has been updated with unique text for testing.",
+        ),
     )
     db_conn_with_fts.commit()
-    
+
     # Search for the updated content
     results = search_lex_fts("unique text testing")
-    found_updated = any("updated with unique text" in entry.get("xhtml_md", "") for entry in results["entries"])
+    found_updated = any(
+        "updated with unique text" in entry.xhtml_md for entry in results.entries
+    )
     assert found_updated
 
 
 def test_fts_triggers_delete(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test that FTS triggers work on DELETE."""
     cursor = db_conn_with_fts.cursor()
-    
+
     # Get initial counts
     cursor.execute("SELECT COUNT(*) FROM articles")
     initial_articles = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM fts_articles")  
+
+    cursor.execute("SELECT COUNT(*) FROM fts_articles")
     initial_fts = cursor.fetchone()[0]
-    
+
     # Delete an article
     cursor.execute("DELETE FROM articles WHERE id = 1")
     db_conn_with_fts.commit()
-    
+
     # Check both tables were updated
     cursor.execute("SELECT COUNT(*) FROM articles")
     new_articles = cursor.fetchone()[0]
-    
+
     cursor.execute("SELECT COUNT(*) FROM fts_articles")
     new_fts = cursor.fetchone()[0]
-    
+
     assert new_articles == initial_articles - 1
     assert new_fts == initial_fts - 1
 
@@ -561,7 +546,7 @@ def test_optimize_fts_index(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test FTS index optimization."""
     # Should not raise any exceptions
     optimize_fts_index(db_conn_with_fts)
-    
+
     # Verify FTS still works after optimization
     results = search_lex_fts("test")
-    assert results["total"] > 0
+    assert results.total > 0

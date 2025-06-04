@@ -24,7 +24,7 @@ paths:
   /api/tables:
     get:
       tags:
-      - API
+      - lex-db
       summary: Get Tables
       description: Get a list of tables in the database.
       operationId: get_tables_api_tables_get
@@ -43,7 +43,7 @@ paths:
   /api/vector-search:
     post:
       tags:
-      - API
+      - lex-db
       summary: Vector Search
       description: Search a vector index for similar content to the query text.
       operationId: vector_search_api_vector_search_post
@@ -59,11 +59,7 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties:
-                  items: {}
-                  type: array
-                type: object
-                title: Response Vector Search Api Vector Search Post
+                $ref: '#/components/schemas/VectorSearchResults'
         '422':
           description: Validation Error
           content:
@@ -73,7 +69,7 @@ paths:
   /api/search:
     post:
       tags:
-      - API
+      - lex-db
       summary: Full Text Search
       description: Search lexicon entries using full-text search.
       operationId: full_text_search_api_search_post
@@ -89,9 +85,7 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Full Text Search Api Search Post
+                $ref: '#/components/schemas/FullTextSearchResults'
         '422':
           description: Validation Error
           content:
@@ -109,15 +103,53 @@ components:
           type: integer
           title: Limit
           default: 50
-        offset:
-          type: integer
-          title: Offset
-          default: 0
       type: object
       required:
       - query
       title: FullTextSearchRequest
       description: Full-text search request model.
+    FullTextSearchResult:
+      properties:
+        id:
+          type: integer
+          title: Id
+        xhtml_md:
+          type: string
+          title: Xhtml Md
+        rank:
+          type: number
+          title: Rank
+      type: object
+      required:
+      - id
+      - xhtml_md
+      - rank
+      title: FullTextSearchResult
+      description: Single result from a full-text search.
+    FullTextSearchResults:
+      properties:
+        entries:
+          items:
+            $ref: '#/components/schemas/FullTextSearchResult'
+          type: array
+          title: Entries
+        total:
+          type: integer
+          title: Total
+        query:
+          type: string
+          title: Query
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - entries
+      - total
+      - query
+      - limit
+      title: FullTextSearchResults
+      description: Result of a full-text search.
     HTTPValidationError:
       properties:
         detail:
@@ -170,3 +202,41 @@ components:
       - embedding_model_choice
       title: VectorSearchRequest
       description: Vector search request model.
+    VectorSearchResult:
+      properties:
+        id_in_index:
+          type: integer
+          title: Id In Index
+        source_article_id:
+          type: string
+          title: Source Article Id
+        chunk_seq:
+          type: integer
+          title: Chunk Seq
+        chunk_text:
+          type: string
+          title: Chunk Text
+        distance:
+          type: number
+          title: Distance
+      type: object
+      required:
+      - id_in_index
+      - source_article_id
+      - chunk_seq
+      - chunk_text
+      - distance
+      title: VectorSearchResult
+      description: Result of a vector search.
+    VectorSearchResults:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/VectorSearchResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - results
+      title: VectorSearchResults
+      description: Result of a vector search.
