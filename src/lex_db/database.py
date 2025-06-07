@@ -1,7 +1,9 @@
 """Database connection and operations for Lex DB."""
 
 from pathlib import Path
+import re
 import sqlite3
+from pydantic import BaseModel
 import sqlite_vec
 from contextlib import contextmanager
 from typing import Generator
@@ -88,3 +90,84 @@ def get_db_info() -> dict:
             "sqlite_version": sqlite_version,
             "vector_version": vector_version,
         }
+
+
+class FullTextSearchResult(BaseModel):
+    """Single result from a full-text search."""
+
+    id: int
+    xhtml_md: str
+    rank: float
+
+
+class FullTextSearchResults(BaseModel):
+    """Result of a full-text search."""
+
+    entries: list[FullTextSearchResult]
+    total: int
+    query: str
+    limit: int
+
+
+def search_lex_fts(query: str, limit: int = 50) -> FullTextSearchResults:
+    """
+    Perform full-text search on lex entries using FTS5.
+    """
+    if not query or not query.strip():
+        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
+
+    # Keep Danish characters (æ, ø, å) and basic punctuation
+    sanitized_query = re.sub(r'["\-:*^()\[\]{}|+&]', " ", query.strip())
+    # Remove multiple spaces and strip
+    sanitized_query = re.sub(r"\s+", " ", sanitized_query).strip()
+
+    if not sanitized_query:
+        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Count total results
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM fts_articles
+            WHERE fts_articles MATCH ?
+        """,
+            (sanitized_query,),
+        )
+        total = cursor.fetchone()[0]
+
+        # Get paginated results with ranking
+        cursor.execute(
+            """
+            SELECT 
+                rowid,
+                xhtml_md,
+                bm25(fts_articles) as rank
+            FROM fts_articles
+            WHERE fts_articles MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        """,
+            (
+                sanitized_query,
+                limit,
+            ),
+        )
+
+        entries = []
+        for row in cursor.fetchall():
+            entries.append(
+                FullTextSearchResult(
+                    id=row[0],
+                    xhtml_md=row[1],
+                    rank=row[2],
+                )
+            )
+
+        return FullTextSearchResults(
+            entries=entries,
+            total=total,
+            query=query,
+            limit=limit,
+        )

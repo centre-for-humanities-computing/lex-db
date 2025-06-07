@@ -20,6 +20,7 @@ dependencies = [
     "sqlite-utils>=3.38",
     "setuptools>=80.7.1",
     "types-setuptools>=80.8.0.20250521",
+    "types-pyyaml>=6.0.12.20250516",
 ]
 
 [project.optional-dependencies]
