@@ -230,7 +230,7 @@ def main() -> None:
         sys.exit(1)
     finally:
         if "db_conn" in locals():
-            db_conn.close()
+            db_conn.close()  # type: ignore
 
 
 if __name__ == "__main__":
