@@ -29,7 +29,7 @@ def main() -> None:
         "--embedding-model",
         "-e",
         choices=[m.value for m in EmbeddingModel],
-        default=EmbeddingModel.LOCAL_E5_MULTILINGUAL.value,
+        default=EmbeddingModel.OPENAI_SMALL_003.value,
         help="Embedding model to use",
     )
 

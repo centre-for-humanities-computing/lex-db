@@ -178,3 +178,6 @@ db/
 
 # Temp notes
 .notes/temp
+
+# Output folder
+output/
