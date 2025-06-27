@@ -65,8 +65,22 @@ def main() -> None:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=20,
-        help="Number of articles to process in one batch",
+        default=64,
+        help="Number of chunks to process in one batch (automatically adjusted for OpenAI)",
+    )
+
+    parser.add_argument(
+        "--max-requests-per-minute",
+        type=int,
+        default=3000,
+        help="Maximum API requests per minute for OpenAI (default: 3000)",
+    )
+
+    parser.add_argument(
+        "--max-tokens-per-minute",
+        type=int,
+        default=1000000,
+        help="Maximum tokens per minute for OpenAI (default: 1000000)",
     )
 
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
@@ -75,6 +89,16 @@ def main() -> None:
 
     # Configure logging
     configure_logging(args.debug)
+
+    # Set up rate limiting for OpenAI if using that model
+    if args.embedding_model == "openai_ada_002":
+        from src.lex_db.embeddings import _openai_rate_limiter
+
+        _openai_rate_limiter.max_requests_per_minute = args.max_requests_per_minute
+        _openai_rate_limiter.max_tokens_per_minute = args.max_tokens_per_minute
+        logger.info(
+            f"OpenAI rate limits: {args.max_requests_per_minute} req/min, {args.max_tokens_per_minute} tokens/min"
+        )
 
     # Connect to database and update the vector index
     try:

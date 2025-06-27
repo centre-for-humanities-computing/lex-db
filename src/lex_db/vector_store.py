@@ -101,15 +101,190 @@ def add_single_article_to_vector_index(
     logger.debug(f"Added article {article_rowid} to index {vector_index_name}.")
 
 
+def add_chunks_to_vector_index(
+    db_conn: sqlite3.Connection,
+    vector_index_name: str,
+    chunks_data: list[
+        tuple[str, str, str]
+    ],  # List of (article_rowid, chunk_id, chunk_text)
+    embedding_model_choice: EmbeddingModel,
+) -> None:
+    """Add multiple chunks to an existing vector index."""
+
+    cursor = db_conn.cursor()
+    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    embeddings = generate_embeddings(
+        [chunk_text for _, _, chunk_text in chunks_data],
+        model_choice=embedding_model_choice,
+    )
+    if not embeddings:
+        logger.error("No embeddings generated for the provided chunks.")
+        return
+    if len(embeddings) != len(chunks_data):
+        logger.error(
+            "Mismatch between number of chunks and number of embeddings generated."
+        )
+        return
+
+    for (article_rowid, chunk_id, chunk_text), embedding in zip(
+        chunks_data, embeddings
+    ):
+        insert_sql = f"""
+        INSERT INTO {vector_index_name} (
+            embedding, source_article_id, chunk_sequence_id, chunk_text, 
+            last_updated
+        )
+        VALUES (?, ?, ?, ?, ?);
+        """
+        cursor.execute(
+            insert_sql,
+            (
+                json.dumps(embedding),
+                article_rowid,
+                chunk_id,  # chunk_sequence_id (not used in this context)
+                chunk_text,
+                current_time_str,
+            ),
+        )
+
+    db_conn.commit()
+
+
+def add_precomputed_embeddings_to_vector_index(
+    db_conn: sqlite3.Connection,
+    vector_index_name: str,
+    source_table: str,
+    text_column: str,
+    embeddings_data: list[
+        tuple[str, str, str, list[float]]
+    ],  # (article_id, chunk_idx, chunk_text, embedding)
+    chunk_size: int = 512,
+    chunk_overlap: int = 50,
+    batch_size: int = 16,
+) -> dict[str, int]:
+    """
+    Add pre-computed embeddings to a vector index.
+
+    This function is useful when you have embeddings from external sources
+    (like OpenAI batch API) and need to reconstruct the chunk text from the source.
+    """
+    cursor = db_conn.cursor()
+    stats = {"created": 0, "skipped": 0, "errors": 0}
+    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    logger.info(f"Processing {len(embeddings_data)} pre-computed embeddings")
+
+    # Group embeddings by article_id to minimize database queries
+    embeddings_by_article: dict[str, list[tuple[str, str, list[float]]]] = {}
+    for article_id, chunk_idx, chunk_text, embedding in embeddings_data:
+        if article_id not in embeddings_by_article:
+            embeddings_by_article[article_id] = []
+        embeddings_by_article[article_id].append((chunk_idx, chunk_text, embedding))
+
+    # Process each article
+    for article_id, article_embeddings in embeddings_by_article.items():
+        try:
+            # Get the original text if chunk_text is empty
+            need_text = any(not chunk_text for _, chunk_text, _ in article_embeddings)
+
+            original_chunks = []
+            if need_text:
+                # Fetch original text and recreate chunks
+                cursor.execute(
+                    f"SELECT {text_column} FROM {source_table} WHERE id = ?",
+                    (article_id,),
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    logger.warning(f"No text found for article {article_id}, skipping")
+                    stats["skipped"] += len(article_embeddings)
+                    continue
+
+                original_text = row[0]
+                original_chunks = split_document_into_chunks(
+                    original_text, chunk_size=chunk_size, overlap=chunk_overlap
+                )
+
+            # Process embeddings for this article in batches
+            for i in range(0, len(article_embeddings), batch_size):
+                batch = article_embeddings[i : i + batch_size]
+
+                for chunk_idx, chunk_text, embedding in batch:
+                    try:
+                        # Use provided chunk_text or get from original_chunks
+                        if not chunk_text and original_chunks:
+                            if int(chunk_idx) < len(original_chunks):
+                                chunk_text = original_chunks[int(chunk_idx)]
+                            else:
+                                logger.warning(
+                                    f"Chunk index {chunk_idx} out of range for article {article_id}"
+                                )
+                                stats["errors"] += 1
+                                continue
+                        elif not chunk_text:
+                            logger.warning(
+                                f"No chunk text available for article {article_id}, chunk {chunk_idx}"
+                            )
+                            stats["errors"] += 1
+                            continue
+
+                        # Insert the embedding
+                        insert_sql = f"""
+                        INSERT OR REPLACE INTO {vector_index_name} (
+                            embedding, source_article_id, chunk_sequence_id, chunk_text, 
+                            last_updated
+                        )
+                        VALUES (?, ?, ?, ?, ?);
+                        """
+                        cursor.execute(
+                            insert_sql,
+                            (
+                                json.dumps(embedding),
+                                article_id,
+                                chunk_idx,
+                                chunk_text,
+                                current_time_str,
+                            ),
+                        )
+                        stats["created"] += 1
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error inserting embedding for article {article_id}, chunk {chunk_idx}: {e}"
+                        )
+                        stats["errors"] += 1
+
+                # Commit after each batch
+                db_conn.commit()
+
+                if (i // batch_size + 1) % 10 == 0:  # Log progress every 10 batches
+                    logger.info(f"Processed {stats['created']} embeddings so far...")
+
+        except Exception as e:
+            logger.error(f"Error processing article {article_id}: {e}")
+            stats["errors"] += len(article_embeddings)
+
+    logger.info(f"Pre-computed embeddings processing complete: {stats}")
+    return stats
+
+
 def remove_article_from_vector_index(
     db_conn: sqlite3.Connection, vector_index_name: str, article_rowid: str
-) -> None:
+) -> int:
     """Remove an article from a vector index."""
     cursor = db_conn.cursor()
+    select_sql = (
+        f"SELECT COUNT(*) FROM {vector_index_name} WHERE source_article_id = ?;"
+    )
+    cursor.execute(select_sql, (article_rowid,))
+    count = cursor.fetchone()[0]
     delete_sql = f"DELETE FROM {vector_index_name} WHERE source_article_id = ?;"
     cursor.execute(delete_sql, (article_rowid,))
     db_conn.commit()
-    logger.info(f"Removed article {article_rowid} from index {vector_index_name}.")
+    logger.debug(
+        f"Removed article {article_rowid} ({count} batches) from index {vector_index_name}."
+    )
+    return int(count)
 
 
 class VectorSearchResult(BaseModel):
@@ -170,6 +345,19 @@ def search_vector_index(
     return VectorSearchResults(results=formatted_results)
 
 
+def validate_tables_exist(
+    db_conn: sqlite3.Connection,
+    table_names: list[str],
+) -> None:
+    cursor = db_conn.cursor()
+    for table in table_names:
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        )
+        if not cursor.fetchone():
+            raise ValueError(f"Table '{table}' does not exist")
+
+
 def update_vector_index(
     db_conn: sqlite3.Connection,
     vector_index_name: str,
@@ -179,19 +367,17 @@ def update_vector_index(
     updated_at_column: str = "updated_at",
     chunk_size: int = 512,
     chunk_overlap: int = 50,
-    batch_size: int = 100,
+    batch_size: int = 64,
 ) -> dict[str, int]:
     """Update a vector index with new, modified, or deleted content."""
     cursor = db_conn.cursor()
-    stats = {"new": 0, "updated": 0, "deleted": 0, "errors": 0, "unchanged": 0}
+    stats = {"created": 0, "deleted": 0, "errors": 0}
 
     # Validate tables exist
-    for table in [vector_index_name, source_table]:
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-        )
-        if not cursor.fetchone():
-            raise ValueError(f"Table '{table}' does not exist")
+    validate_tables_exist(
+        db_conn,
+        [vector_index_name, source_table],
+    )
 
     # Get existing article timestamps from the vector index
     cursor.execute(f"SELECT source_article_id, last_updated FROM {vector_index_name}")
@@ -206,104 +392,74 @@ def update_vector_index(
         str(row[0]): {"updated_at": row[1], "text": row[2]} for row in cursor.fetchall()
     }
     logger.info("Fetched all articles from source table.")
+
     index_ids = set(index_timestamps.keys())
     source_ids = set(source_articles.keys())
-
     ids_to_delete = index_ids - source_ids
     ids_to_create = source_ids - index_ids
-    ids_to_check = source_ids & index_ids
+    ids_to_update = {
+        article_id
+        for article_id in source_ids & index_ids
+        if datetime.strptime(index_timestamps[article_id], "%Y-%m-%d %H:%M:%S.%f")
+        < datetime.strptime(
+            source_articles[article_id]["updated_at"], "%Y-%m-%d %H:%M:%S.%f"
+        )
+    }
+    ids_to_skip = index_ids & source_ids - ids_to_create - ids_to_update
+
     logger.info(f"IDs to create: {len(ids_to_create)}")
     logger.info(f"IDs to delete: {len(ids_to_delete)}")
-    logger.info(f"IDs to check: {len(ids_to_check)}")
+    logger.info(f"IDs to update: {len(ids_to_update)}")
+    logger.info(f"IDs to skip: {len(ids_to_skip)}")
 
-    for article_id in ids_to_create:
-        article = source_articles[article_id]
-        article_text = article["text"]
-        article_updated_at = datetime.strptime(
-            article["updated_at"], "%Y-%m-%d %H:%M:%S.%f"
-        )
-
-        if article_text:
-            try:
-                add_single_article_to_vector_index(
-                    db_conn=db_conn,
-                    vector_index_name=vector_index_name,
-                    article_rowid=article_id,
-                    article_text=article_text,
-                    embedding_model_choice=EmbeddingModel(embedding_model_choice),
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                )
-                stats["new"] += 1
-            except Exception as e:
-                logger.error(f"Error adding article {article_id}: {str(e)}")
-                stats["errors"] += 1
-        else:
-            logger.warning(f"Article {article_id} has no text content.")
-            stats["errors"] += 1
-
-        # Commit every batch_size creations
-        if (stats["new"] + 1) % batch_size == 0:
-            logger.info(f"Committing after {stats['new'] + 1} creations.")
-            db_conn.commit()
-
-    for article_id in ids_to_delete:
+    last_message_index = 0
+    for article_id in ids_to_delete | ids_to_update:
         try:
-            remove_article_from_vector_index(db_conn, vector_index_name, article_id)
-            stats["deleted"] += 1
+            chunks_deleted = remove_article_from_vector_index(
+                db_conn, vector_index_name, article_id
+            )
+            stats["deleted"] += chunks_deleted
         except Exception as e:
             logger.error(f"Error removing article {article_id}: {str(e)}")
             stats["errors"] += 1
 
-        # Commit every batch_size deletions
-        if (stats["deleted"] + 1) % batch_size == 0:
-            logger.info(f"Committing after {stats['deleted'] + 1} deletions.")
-            db_conn.commit()
+        # Give a status update on deletions
+        if (last_message_index - stats["deleted"]) > 100:
+            logger.info(f"Chunks deleted: {stats['deleted']}.")
+            last_message_index = stats["deleted"]
 
-    # Commit after each batch
-    db_conn.commit()
-
-    for article_id in ids_to_check:
+    chunks_to_create = []
+    for article_id in ids_to_create | ids_to_update:
         article = source_articles[article_id]
-        index_updated_at = datetime.strptime(
-            index_timestamps[article_id], "%Y-%m-%d %H:%M:%S.%f"
-        )
-        article_updated_at = datetime.strptime(
-            article["updated_at"], "%Y-%m-%d %H:%M:%S.%f"
-        )
-        if article_updated_at > index_updated_at:
-            article_text = article["text"]
-            if article_text:
-                try:
-                    remove_article_from_vector_index(
-                        db_conn, vector_index_name, article_id
-                    )
-                    add_single_article_to_vector_index(
-                        db_conn=db_conn,
-                        vector_index_name=vector_index_name,
-                        article_rowid=article_id,
-                        article_text=article_text,
-                        embedding_model_choice=EmbeddingModel(embedding_model_choice),
-                        chunk_size=chunk_size,
-                        chunk_overlap=chunk_overlap,
-                    )
-                    stats["updated"] += 1
-                except Exception as e:
-                    logger.error(f"Error updating article {article_id}: {str(e)}")
-                    stats["errors"] += 1
-            else:
-                logger.warning(f"Article {article_id} has no text content.")
-                stats["errors"] += 1
+        article_text = article["text"]
+        if article_text:
+            chunks = split_document_into_chunks(
+                article_text, chunk_size=chunk_size, overlap=chunk_overlap
+            )
+            chunks_to_create += [
+                (article_id, str(chunk_id), chunk_text)
+                for chunk_id, chunk_text in enumerate(chunks)
+            ]
         else:
-            stats["unchanged"] += 1
+            logger.warning(f"Article {article_id} has no text content.")
+            stats["errors"] += 1
 
-        # Commit every batch_size updates
-        if (stats["updated"] + 1) % batch_size == 0:
-            logger.info(f"Committing after {stats['updated'] + 1} updates.")
-            db_conn.commit()
+    logger.info(f"Total chunks to create: {len(chunks_to_create)}")
+    for i in range(0, len(chunks_to_create), batch_size):
+        batch = chunks_to_create[i : i + batch_size]
+        try:
+            add_chunks_to_vector_index(
+                db_conn=db_conn,
+                vector_index_name=vector_index_name,
+                chunks_data=batch,
+                embedding_model_choice=EmbeddingModel(embedding_model_choice),
+            )
+            stats["created"] += len(batch)
+        except Exception as e:
+            logger.error(f"Error adding batch of articles: {str(e)}")
+            stats["errors"] += len(batch)
 
-        if (stats["unchanged"] + 1) % batch_size == 0:
-            logger.info(f"Processed {stats['unchanged'] + 1} unchanged articles.")
+        logger.info(f"Chunks added: {stats['created']}/{len(chunks_to_create)}")
 
     db_conn.commit()
 
