@@ -6,7 +6,7 @@ import sqlite3
 from pydantic import BaseModel
 import sqlite_vec
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 
 from src.lex_db.config import get_settings
 from src.lex_db.utils import get_logger
@@ -34,10 +34,7 @@ def create_connection() -> sqlite3.Connection:
         raise FileNotFoundError(f"Database file not found at {db_path}")
 
     try:
-        # Connect to the database
         conn = sqlite3.connect(db_path)
-
-        # Enable loading extensions
         conn.enable_load_extension(True)
 
         # Load the sqlite-vec extension
@@ -46,8 +43,6 @@ def create_connection() -> sqlite3.Connection:
         except sqlite3.Error as e:
             conn.close()
             raise sqlite3.Error(f"Failed to load sqlite-vec extension: {e}")
-
-        # Configure connection
         conn.row_factory = sqlite3.Row
 
         return conn
@@ -68,12 +63,9 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
 def get_db_info() -> dict:
     """Get information about the database."""
     with get_db_connection() as conn:
-        # Get the list of tables
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [row[0] for row in cursor.fetchall()]
-
-        # Get the SQLite version
         cursor.execute("SELECT sqlite_version();")
         sqlite_version = cursor.fetchone()[0]
 
@@ -92,82 +84,121 @@ def get_db_info() -> dict:
         }
 
 
-class FullTextSearchResult(BaseModel):
-    """Single result from a full-text search."""
+class SearchResult(BaseModel):
+    """Single result from a search."""
 
     id: int
     xhtml_md: str
     rank: float
 
 
-class FullTextSearchResults(BaseModel):
-    """Result of a full-text search."""
+class SearchResults(BaseModel):
+    """Results of a search."""
 
-    entries: list[FullTextSearchResult]
+    entries: list[SearchResult]
     total: int
-    query: str
     limit: int
 
 
-def search_lex_fts(query: str, limit: int = 50) -> FullTextSearchResults:
+def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
+    """
+    Fetch articles by a list of IDs.
+    """
+    if not ids:
+        return SearchResults(entries=[], total=0, limit=limit)
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        placeholders = ",".join("?" for _ in ids)
+        cursor.execute(
+            f"SELECT COUNT(*) FROM fts_articles WHERE rowid IN ({placeholders})",
+            ids,
+        )
+        total = cursor.fetchone()[0]
+        cursor.execute(
+            f"""
+            SELECT rowid, xhtml_md, 0.0 as rank
+            FROM fts_articles
+            WHERE rowid IN ({placeholders})
+            LIMIT ?
+            """,
+            (*ids, limit),
+        )
+        entries = [
+            SearchResult(
+                id=row[0],
+                xhtml_md=row[1],
+                rank=row[2],
+            )
+            for row in cursor.fetchall()
+        ]
+        return SearchResults(
+            entries=entries,
+            total=total,
+            limit=limit,
+        )
+
+
+def search_lex_fts(
+    query: str, ids: Optional[list[int]] = None, limit: int = 50
+) -> SearchResults:
     """
     Perform full-text search on lex entries using FTS5.
+    Optionally restrict search to a set of IDs.
     """
     if not query or not query.strip():
-        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
+        if ids:
+            return get_articles_by_ids(ids, limit=limit)
+        return SearchResults(entries=[], total=0, limit=limit)
 
     # Keep Danish characters (æ, ø, å) and basic punctuation
     sanitized_query = re.sub(r'["\-:*^()\[\]{}|+&]', " ", query.strip())
-    # Remove multiple spaces and strip
     sanitized_query = re.sub(r"\s+", " ", sanitized_query).strip()
 
     if not sanitized_query:
-        return FullTextSearchResults(entries=[], total=0, query=query, limit=limit)
+        return SearchResults(entries=[], total=0, limit=limit)
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Count total results
+        # Build WHERE clause for ids if provided
+        where_clause = "fts_articles MATCH ?"
+        params = [sanitized_query]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            where_clause += f" AND rowid IN ({placeholders})"
+            params.extend([str(id) for id in ids])
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM fts_articles
-            WHERE fts_articles MATCH ?
-        """,
-            (sanitized_query,),
+            WHERE {where_clause}
+            """,
+            params,
         )
         total = cursor.fetchone()[0]
-
-        # Get paginated results with ranking
         cursor.execute(
-            """
+            f"""
             SELECT 
                 rowid,
                 xhtml_md,
                 bm25(fts_articles) as rank
             FROM fts_articles
-            WHERE fts_articles MATCH ?
+            WHERE {where_clause}
             ORDER BY rank
             LIMIT ?
-        """,
-            (
-                sanitized_query,
-                limit,
-            ),
+            """,
+            (*params, limit),
         )
-
-        entries = []
-        for row in cursor.fetchall():
-            entries.append(
-                FullTextSearchResult(
-                    id=row[0],
-                    xhtml_md=row[1],
-                    rank=row[2],
-                )
+        entries = [
+            SearchResult(
+                id=row[0],
+                xhtml_md=row[1],
+                rank=row[2],
             )
-
-        return FullTextSearchResults(
+            for row in cursor.fetchall()
+        ]
+        return SearchResults(
             entries=entries,
             total=total,
-            query=query,
             limit=limit,
         )

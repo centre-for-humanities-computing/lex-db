@@ -1,15 +1,12 @@
 """API routes for Lex DB."""
 
 from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from typing import List, Optional, Union
 
 from src.lex_db.utils import get_logger
 from src.lex_db.embeddings import EmbeddingModel
-from src.lex_db.database import (
-    FullTextSearchResults,
-    get_db_connection,
-    search_lex_fts,
-)
+import src.lex_db.database as db
 from src.lex_db.vector_store import VectorSearchResults, search_vector_index
 
 logger = get_logger()
@@ -20,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["lex-db"])
 async def get_tables() -> dict[str, list[str]]:
     """Get a list of tables in the database."""
     try:
-        with get_db_connection() as conn:
+        with db.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
             tables = [row[0] for row in cursor.fetchall()]
@@ -50,7 +47,7 @@ async def vector_search(request: VectorSearchRequest) -> VectorSearchResults:
                 f"Unsupported embedding model: {request.embedding_model_choice}"
             )
 
-        with get_db_connection() as conn:
+        with db.get_db_connection() as conn:
             logger.info(
                 f"Searching index '{request.vector_index_name}' for: {request.query_text}"
             )
@@ -70,35 +67,46 @@ async def vector_search(request: VectorSearchRequest) -> VectorSearchResults:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
-class FullTextSearchRequest(BaseModel):
-    """Full-text search request model."""
-
-    query: str
-    limit: int = 50
-
-
-@router.post("/search")
-async def full_text_search(request: FullTextSearchRequest) -> FullTextSearchResults:
-    """Search lexicon entries using full-text search."""
+@router.get(
+    "/articles",
+    summary="An endpoint for filtering articles based on metadata such as id, text search, etc. Query parameters are used for filtering (e.g. GET /articles?query=RoundTower, or GET /articles?id=[1,2,5])",
+)
+async def get_articles(
+    query: Optional[str] = Query(None, description="Text search in articles"),
+    id: Union[List[int], int, None] = Query(None, description="List of article IDs"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
+) -> db.SearchResults:
+    """
+    Filtrér artikler baseret på tekstsøgning og/eller id.
+    """
     try:
-        if not request.query.strip():
-            raise ValueError("Query cannot be empty")
+        # Accept both single and multiple ids
+        ids = id if id is not None else None
+        if ids is not None and not isinstance(ids, list):
+            ids = [ids]
+        # Remove duplicates and None values
+        if ids:
+            ids = [i for i in ids if i is not None]
+            if len(ids) == 0:
+                ids = None
 
-        # Validate pagination parameters
-        if request.limit < 1 or request.limit > 100:
-            raise ValueError("Limit must be between 1 and 100")
+        # If only id filter is provided, fetch by id(s)
+        if ids and (not query or not query.strip()):
+            logger.info(f"Fetching articles by id: {ids}")
+            results = db.get_articles_by_ids(ids, limit=limit)
+            return results
 
-        logger.info(f"Full-text search for: {request.query}")
-        results = search_lex_fts(query=request.query, limit=request.limit)
-        return FullTextSearchResults(
-            entries=results.entries,
-            total=results.total,
-            query=request.query,
-            limit=request.limit,
+        # If only query or both query and id are provided
+        if query and query.strip():
+            logger.info(f"Full-text search for: {query}, id filter: {ids}")
+            results = db.search_lex_fts(query=query, ids=ids, limit=limit)
+            return results
+        raise ValueError(
+            "At least one filter parameter ('query' or 'id') must be provided"
         )
     except ValueError as e:
-        logger.error(f"Validation error in full-text search: {str(e)}")
+        logger.error(f"Validation error in article search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Error in full-text search: {str(e)}")
+        logger.error(f"Error in article search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
