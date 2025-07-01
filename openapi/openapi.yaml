@@ -66,26 +66,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/search:
-    post:
+  /api/articles:
+    get:
       tags:
       - lex-db
-      summary: Full Text Search
-      description: Search lexicon entries using full-text search.
-      operationId: full_text_search_api_search_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/FullTextSearchRequest'
-        required: true
+      summary: An endpoint for filtering articles based on metadata such as id, text
+        search, etc. Query parameters are used for filtering (e.g. GET /articles?query=RoundTower,
+        or GET /articles?id=[1,2,5])
+      description: "Filtr\xE9r artikler baseret p\xE5 teksts\xF8gning og/eller id."
+      operationId: get_articles_api_articles_get
+      parameters:
+      - name: query
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Text search in articles
+          title: Query
+        description: Text search in articles
+      - name: id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: integer
+          - type: integer
+          - type: 'null'
+          description: List of article IDs
+          title: Id
+        description: List of article IDs
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Maximum number of results
+          default: 50
+          title: Limit
+        description: Maximum number of results
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FullTextSearchResults'
+                $ref: '#/components/schemas/SearchResults'
         '422':
           description: Validation Error
           content:
@@ -94,21 +125,16 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
-    FullTextSearchRequest:
+    HTTPValidationError:
       properties:
-        query:
-          type: string
-          title: Query
-        limit:
-          type: integer
-          title: Limit
-          default: 50
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
       type: object
-      required:
-      - query
-      title: FullTextSearchRequest
-      description: Full-text search request model.
-    FullTextSearchResult:
+      title: HTTPValidationError
+    SearchResult:
       properties:
         id:
           type: integer
@@ -124,21 +150,18 @@ components:
       - id
       - xhtml_md
       - rank
-      title: FullTextSearchResult
-      description: Single result from a full-text search.
-    FullTextSearchResults:
+      title: SearchResult
+      description: Single result from a search.
+    SearchResults:
       properties:
         entries:
           items:
-            $ref: '#/components/schemas/FullTextSearchResult'
+            $ref: '#/components/schemas/SearchResult'
           type: array
           title: Entries
         total:
           type: integer
           title: Total
-        query:
-          type: string
-          title: Query
         limit:
           type: integer
           title: Limit
@@ -146,19 +169,9 @@ components:
       required:
       - entries
       - total
-      - query
       - limit
-      title: FullTextSearchResults
-      description: Result of a full-text search.
-    HTTPValidationError:
-      properties:
-        detail:
-          items:
-            $ref: '#/components/schemas/ValidationError'
-          type: array
-          title: Detail
-      type: object
-      title: HTTPValidationError
+      title: SearchResults
+      description: Results of a search.
     ValidationError:
       properties:
         loc:

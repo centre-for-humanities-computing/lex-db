@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Generator
 
 import sqlite_vec
+from src.lex_db.api.routes import router
+from fastapi import FastAPI
 
 from src.lex_db.config import Settings
 from src.lex_db.vector_store import (
@@ -14,13 +16,16 @@ from src.lex_db.vector_store import (
     search_vector_index,
 )
 from src.lex_db.embeddings import EmbeddingModel, get_embedding_dimensions
-from src.lex_db.database import search_lex_fts
+from src.lex_db.database import search_lex_fts, get_articles_by_ids
 from src.scripts.create_fts_index import (
     create_fts_tables,
     populate_fts_tables,
     optimize_fts_index,
     verify_fts_setup,
 )
+
+app = FastAPI()
+app.include_router(router)
 
 
 @pytest.fixture
@@ -400,7 +405,6 @@ def test_search_lex_fts_basic(db_conn_with_fts: sqlite3.Connection) -> None:
     """Test basic full-text search functionality."""
     results = search_lex_fts("test", limit=10)
 
-    assert results.query == "test"
     assert results.total > 0
     assert len(results.entries) > 0
     assert results.limit == 10
@@ -417,7 +421,6 @@ def test_search_lex_fts_empty_query(db_conn_with_fts: sqlite3.Connection) -> Non
 
     assert results.entries == []
     assert results.total == 0
-    assert results.query == ""
 
 
 def test_search_lex_fts_no_results(db_conn_with_fts: sqlite3.Connection) -> None:
@@ -426,7 +429,6 @@ def test_search_lex_fts_no_results(db_conn_with_fts: sqlite3.Connection) -> None
 
     assert results.entries == []
     assert results.total == 0
-    assert results.query == "nonexistentword12345"
 
 
 def test_search_lex_fts_danish_characters(db_conn_with_fts: sqlite3.Connection) -> None:
@@ -550,3 +552,19 @@ def test_optimize_fts_index(db_conn_with_fts: sqlite3.Connection) -> None:
     # Verify FTS still works after optimization
     results = search_lex_fts("test")
     assert results.total > 0
+
+
+def test_get_articles_by_single_id(db_conn_with_fts: sqlite3.Connection) -> None:
+    # Assume article with id=1 exists from test data
+    results = get_articles_by_ids([1], limit=10)
+    assert results.total == 1
+    assert len(results.entries) == 1
+    assert results.entries[0].id == 1
+
+
+def test_get_articles_by_multiple_ids(db_conn_with_fts: sqlite3.Connection) -> None:
+    # Assume articles with id=1 and id=2 exist from test data
+    results = get_articles_by_ids([1, 2], limit=10)
+    assert results.total == 2
+    returned_ids = {entry.id for entry in results.entries}
+    assert {1, 2}.issubset(returned_ids)
