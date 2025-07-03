@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from src.lex_db.utils import get_logger, configure_logging
+from src.lex_db.utils import get_logger, configure_logging, ChunkingStrategy
 from src.lex_db.embeddings import EmbeddingModel
 from src.lex_db.vector_store import create_vector_index
 from src.lex_db.database import create_connection
@@ -41,6 +41,35 @@ def main() -> None:
         help="Force drop of existing index before creation",
     )
 
+    parser.add_argument(
+        "--source-table",
+        required=True,
+        help="Source table containing text to embed (for metadata)",
+    )
+    parser.add_argument(
+        "--source-column",
+        required=True,
+        help="Column in source table containing text to embed (for metadata)",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Size of text chunks for embedding (for metadata)",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=50,
+        help="Overlap between consecutive chunks (for metadata)",
+    )
+    parser.add_argument(
+        "--chunking-strategy",
+        default=ChunkingStrategy.TOKENS.value,
+        choices=[s.value for s in ChunkingStrategy],
+        help="Name of the chunking strategy (for metadata)",
+    )
+
     args = parser.parse_args()
     settings = get_settings()
 
@@ -60,6 +89,11 @@ def main() -> None:
             vector_index_name=args.index_name,
             embedding_model_choice=EmbeddingModel(args.embedding_model),
             force=args.force_drop,
+            source_table=args.source_table,
+            source_column=args.source_column,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            chunking_strategy=ChunkingStrategy(args.chunking_strategy),
         )
         logger.info(
             "Vector index structure created! Use update_vector_indexes.py to populate it."
