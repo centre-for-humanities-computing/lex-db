@@ -14,10 +14,10 @@ logger = get_logger()
 class EmbeddingModel(str, Enum):
     """Supported embedding models."""
 
-    LOCAL_E5_MULTILINGUAL = "local_e5"
-    OPENAI_ADA_002 = "openai_ada_002"
-    OPENAI_SMALL_003 = "openai_small_003"
-    OPENAI_LARGE_003 = "openai_large_003"
+    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large-instruct"
+    OPENAI_ADA_002 = "text-embedding-ada-002"
+    OPENAI_SMALL_003 = "text-embedding-3-small"
+    OPENAI_LARGE_003 = "text-embedding-3-large"
     MOCK_MODEL = "mock_model"
 
 
@@ -115,7 +115,7 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> object:
 
             logger.info(f"Loading embedding model: {model_choice}")
             _model_cache[model_choice] = SentenceTransformer(
-                "intfloat/multilingual-e5-large-instruct"
+                EmbeddingModel.LOCAL_E5_MULTILINGUAL.value
             )
         else:
             raise ValueError(f"Local model not supported: {model_choice}")
@@ -211,12 +211,8 @@ def generate_embeddings(
 
             client = OpenAI(api_key=api_key)
 
-            # Map model enum to actual model name
-            model_name = {
-                EmbeddingModel.OPENAI_ADA_002: "text-embedding-ada-002",
-                EmbeddingModel.OPENAI_SMALL_003: "text-embedding-3-small",
-                EmbeddingModel.OPENAI_LARGE_003: "text-embedding-3-large",
-            }[model_choice]
+            # Use the enum value directly as the model name
+            model_name = model_choice.value
 
             logger.info(
                 f"Generating embeddings for {len(texts)} texts using OpenAI API ({model_name})"

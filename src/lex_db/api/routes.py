@@ -5,9 +5,13 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional, Union
 
 from src.lex_db.utils import get_logger
-from src.lex_db.embeddings import EmbeddingModel
 import src.lex_db.database as db
-from src.lex_db.vector_store import VectorSearchResults, search_vector_index
+from src.lex_db.vector_store import (
+    VectorSearchResults,
+    search_vector_index,
+    get_all_vector_index_metadata,
+    get_vector_index_metadata,
+)
 
 logger = get_logger()
 router = APIRouter(prefix="/api", tags=["lex-db"])
@@ -31,31 +35,31 @@ async def get_tables() -> dict[str, list[str]]:
 class VectorSearchRequest(BaseModel):
     """Vector search request model."""
 
-    vector_index_name: str
     query_text: str
-    embedding_model_choice: str
     top_k: int = 5
 
 
-@router.post("/vector-search")
-async def vector_search(request: VectorSearchRequest) -> VectorSearchResults:
+@router.post("/vector-search/indexes/{index_name}/query")
+async def vector_search(
+    index_name: str, request: VectorSearchRequest
+) -> VectorSearchResults:
     """Search a vector index for similar content to the query text."""
     try:
-        # Validate embedding model choice
-        if request.embedding_model_choice not in [m.value for m in EmbeddingModel]:
-            raise ValueError(
-                f"Unsupported embedding model: {request.embedding_model_choice}"
-            )
-
         with db.get_db_connection() as conn:
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+            embedding_model = meta["embedding_model"]
             logger.info(
-                f"Searching index '{request.vector_index_name}' for: {request.query_text}"
+                f"Searching index '{index_name}' for: {request.query_text} using model {embedding_model}"
             )
             results = search_vector_index(
                 db_conn=conn,
-                vector_index_name=request.vector_index_name,
+                vector_index_name=index_name,
                 query_text=request.query_text,
-                embedding_model_choice=EmbeddingModel(request.embedding_model_choice),
+                embedding_model=embedding_model,
                 top_k=request.top_k,
             )
             return results
@@ -110,3 +114,41 @@ async def get_articles(
     except Exception as e:
         logger.error(f"Error in article search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@router.get(
+    "/vector-search/indexes", summary="List all vector indexes and their metadata"
+)
+async def list_vector_indexes() -> list[dict]:
+    """Return a list of all vector indexes and their metadata."""
+    try:
+        with db.get_db_connection() as conn:
+            return get_all_vector_index_metadata(conn)
+    except Exception as e:
+        logger.error(f"Error listing vector indexes: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error listing vector indexes: {str(e)}"
+        )
+
+
+@router.get(
+    "/vector-search/indexes/{index_name}",
+    summary="Get metadata for a specific vector index",
+)
+async def get_vector_index(index_name: str) -> dict:
+    """Return metadata for a specific vector index."""
+    try:
+        with db.get_db_connection() as conn:
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+            return meta
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting vector index metadata: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error getting vector index metadata: {str(e)}"
+        )

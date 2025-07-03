@@ -40,19 +40,26 @@ paths:
                   type: array
                 type: object
                 title: Response Get Tables Api Tables Get
-  /api/vector-search:
+  /api/vector-search/indexes/{index_name}/query:
     post:
       tags:
       - lex-db
       summary: Vector Search
       description: Search a vector index for similar content to the query text.
-      operationId: vector_search_api_vector_search_post
+      operationId: vector_search_api_vector_search_indexes__index_name__query_post
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/VectorSearchRequest'
-        required: true
       responses:
         '200':
           description: Successful Response
@@ -117,6 +124,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchResults'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/vector-search/indexes:
+    get:
+      tags:
+      - lex-db
+      summary: List all vector indexes and their metadata
+      description: Return a list of all vector indexes and their metadata.
+      operationId: list_vector_indexes_api_vector_search_indexes_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  additionalProperties: true
+                  type: object
+                type: array
+                title: Response List Vector Indexes Api Vector Search Indexes Get
+  /api/vector-search/indexes/{index_name}:
+    get:
+      tags:
+      - lex-db
+      summary: Get metadata for a specific vector index
+      description: Return metadata for a specific vector index.
+      operationId: get_vector_index_api_vector_search_indexes__index_name__get
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Vector Index Api Vector Search Indexes  Index
+                  Name  Get
         '422':
           description: Validation Error
           content:
@@ -195,24 +250,16 @@ components:
       title: ValidationError
     VectorSearchRequest:
       properties:
-        vector_index_name:
-          type: string
-          title: Vector Index Name
         query_text:
           type: string
           title: Query Text
-        embedding_model_choice:
-          type: string
-          title: Embedding Model Choice
         top_k:
           type: integer
           title: Top K
           default: 5
       type: object
       required:
-      - vector_index_name
       - query_text
-      - embedding_model_choice
       title: VectorSearchRequest
       description: Vector search request model.
     VectorSearchResult:

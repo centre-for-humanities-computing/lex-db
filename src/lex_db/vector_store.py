@@ -5,13 +5,14 @@ import sqlite3
 from datetime import datetime
 
 from pydantic import BaseModel
-from src.lex_db.utils import get_logger, split_document_into_chunks
+from src.lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
 from src.lex_db.embeddings import (
     EmbeddingModel,
     generate_embeddings,
     get_embedding_dimensions,
     generate_query_embedding,
 )
+from typing import Any
 
 logger = get_logger()
 
@@ -21,8 +22,13 @@ def create_vector_index(
     vector_index_name: str,
     embedding_model_choice: EmbeddingModel,
     force: bool = False,
+    source_table: str | None = None,
+    source_column: str | None = None,
+    chunk_size: int = 512,
+    chunk_overlap: int = 50,
+    chunking_strategy: ChunkingStrategy = ChunkingStrategy.TOKENS,
 ) -> None:
-    """Create a new vector index structure."""
+    """Create a new vector index structure and store its metadata."""
     cursor = db_conn.cursor()
     embedding_dim = get_embedding_dimensions(embedding_model_choice)
     if force:
@@ -51,6 +57,26 @@ def create_vector_index(
     cursor.execute(create_table_sql)
     logger.info(f"Virtual table {vector_index_name} created.")
     logger.info("Index structure created. Use update_vector_indexes.py to populate it.")
+
+    # Insert metadata if all required fields are provided
+    if source_table and source_column:
+        insert_vector_index_metadata(
+            db_conn=db_conn,
+            index_name=vector_index_name,
+            source_table=source_table,
+            source_column=source_column,
+            embedding_model=str(embedding_model_choice),
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy.value,
+        )
+        logger.info(
+            f"Metadata for index '{vector_index_name}' stored in vector_index_metadata table."
+        )
+    else:
+        logger.warning(
+            f"Metadata not stored for index '{vector_index_name}': source_table or source_column missing."
+        )
 
 
 def add_single_article_to_vector_index(
@@ -307,16 +333,23 @@ def search_vector_index(
     db_conn: sqlite3.Connection,
     vector_index_name: str,
     query_text: str,
-    embedding_model_choice: EmbeddingModel,
+    embedding_model: EmbeddingModel,
     top_k: int = 5,
 ) -> VectorSearchResults:
     """Search a vector index for similar content to the query text."""
+    from src.lex_db.embeddings import EmbeddingModel
+
     cursor = db_conn.cursor()
 
+    # Accept both EmbeddingModel and string for embedding_model_choice
+    if not isinstance(embedding_model, EmbeddingModel):
+        try:
+            embedding_model = EmbeddingModel(embedding_model)
+        except Exception:
+            raise ValueError(f"Unknown embedding model: {embedding_model}")
+
     # Generate embedding for the query text
-    query_vector = generate_query_embedding(
-        query_text, model_choice=embedding_model_choice
-    )
+    query_vector = generate_query_embedding(query_text, model_choice=embedding_model)
     query_vector_json = json.dumps(query_vector)
 
     search_sql = f"""
@@ -463,5 +496,118 @@ def update_vector_index(
 
     db_conn.commit()
 
+    # Update the metadata table's updated_at field for this index
+    try:
+        update_vector_index_metadata(db_conn, vector_index_name)
+        logger.info(
+            f"Updated metadata for index '{vector_index_name}' (updated_at field)."
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not update metadata for index '{vector_index_name}': {e}"
+        )
+
     logger.info(f"Update summary: {stats}")
     return stats
+
+
+def create_vector_index_metadata_table(db_conn: sqlite3.Connection) -> None:
+    """Create the metadata table for vector indexes if it does not exist."""
+    cursor = db_conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vector_index_metadata (
+            index_name TEXT PRIMARY KEY,
+            source_table TEXT NOT NULL,
+            source_column TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            chunk_size INTEGER NOT NULL,
+            chunk_overlap INTEGER NOT NULL,
+            chunking_strategy TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    db_conn.commit()
+
+
+def insert_vector_index_metadata(
+    db_conn: sqlite3.Connection,
+    index_name: str,
+    source_table: str,
+    source_column: str,
+    embedding_model: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunking_strategy: str,
+) -> None:
+    """Insert metadata for a new vector index."""
+    create_vector_index_metadata_table(db_conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor = db_conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO vector_index_metadata (
+            index_name, source_table, source_column, embedding_model, chunk_size, chunk_overlap, chunking_strategy, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            index_name,
+            source_table,
+            source_column,
+            embedding_model,
+            chunk_size,
+            chunk_overlap,
+            chunking_strategy,
+            now,
+            now,
+        ),
+    )
+    db_conn.commit()
+
+
+def update_vector_index_metadata(
+    db_conn: sqlite3.Connection,
+    index_name: str,
+    **kwargs: Any,
+) -> None:
+    """Update metadata for an existing vector index. Only updates provided fields."""
+    create_vector_index_metadata_table(db_conn)
+    fields = []
+    values = []
+    for key, value in kwargs.items():
+        fields.append(f"{key} = ?")
+        values.append(value)
+    fields.append("updated_at = ?")
+    values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
+    values.append(index_name)
+    sql = f"UPDATE vector_index_metadata SET {', '.join(fields)} WHERE index_name = ?"
+    cursor = db_conn.cursor()
+    cursor.execute(sql, values)
+    db_conn.commit()
+
+
+def get_all_vector_index_metadata(db_conn: sqlite3.Connection) -> list[dict]:
+    """Retrieve metadata for all vector indexes."""
+    create_vector_index_metadata_table(db_conn)
+    cursor = db_conn.cursor()
+    cursor.execute("SELECT * FROM vector_index_metadata")
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_vector_index_metadata(
+    db_conn: sqlite3.Connection, index_name: str
+) -> dict | None:
+    """Retrieve metadata for a specific vector index."""
+    create_vector_index_metadata_table(db_conn)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "SELECT * FROM vector_index_metadata WHERE index_name = ?", (index_name,)
+    )
+    row = cursor.fetchone()
+    if row:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, row))
+    return None

@@ -8,8 +8,8 @@ from enum import Enum
 logger = logging.getLogger("lex_db")
 
 
-class ChunkingMethod(str, Enum):
-    """Supported chunking methods."""
+class ChunkingStrategy(str, Enum):
+    """Supported chunking strategies."""
 
     TOKENS = "tokens"
     CHARACTERS = "characters"
@@ -115,13 +115,13 @@ def split_document_into_chunks(
     text: str,
     chunk_size: int,
     overlap: int = 0,
-    method: ChunkingMethod = ChunkingMethod.TOKENS,
+    method: ChunkingStrategy = ChunkingStrategy.TOKENS,
     model: str = "text-embedding-ada-002",
 ) -> list[str]:
     """Split a document into chunks with specified method, size and overlap."""
-    if method == ChunkingMethod.TOKENS:
+    if method == ChunkingStrategy.TOKENS:
         return split_text_by_tokens(text, chunk_size, overlap, model)
-    elif method == ChunkingMethod.CHARACTERS:
+    elif method == ChunkingStrategy.CHARACTERS:
         return split_text_by_characters(text, chunk_size, overlap)
     else:
         raise ValueError(f"Unsupported chunking method: {method}")
