@@ -90,6 +90,7 @@ class SearchResult(BaseModel):
     id: int
     xhtml_md: str
     rank: float
+    permalink: Optional[str] = None
 
 
 class SearchResults(BaseModel):
@@ -111,14 +112,14 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
         cursor = conn.cursor()
         placeholders = ",".join("?" for _ in ids)
         cursor.execute(
-            f"SELECT COUNT(*) FROM fts_articles WHERE rowid IN ({placeholders})",
+            f"SELECT COUNT(*) FROM articles WHERE rowid IN ({placeholders})",
             ids,
         )
         total = cursor.fetchone()[0]
         cursor.execute(
             f"""
-            SELECT rowid, xhtml_md, 0.0 as rank
-            FROM fts_articles
+            SELECT rowid, xhtml_md, 0.0 as rank, permalink
+            FROM articles
             WHERE rowid IN ({placeholders})
             LIMIT ?
             """,
@@ -129,6 +130,7 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
                 id=row[0],
                 xhtml_md=row[1],
                 rank=row[2],
+                permalink=row[3],
             )
             for row in cursor.fetchall()
         ]
@@ -166,11 +168,11 @@ def search_lex_fts(
         params = [sanitized_query]
         if ids:
             placeholders = ",".join("?" for _ in ids)
-            where_clause += f" AND rowid IN ({placeholders})"
+            where_clause += f" AND f.rowid IN ({placeholders})"
             params.extend([str(id) for id in ids])
         cursor.execute(
             f"""
-            SELECT COUNT(*) FROM fts_articles
+            SELECT COUNT(*) FROM fts_articles f
             WHERE {where_clause}
             """,
             params,
@@ -179,10 +181,12 @@ def search_lex_fts(
         cursor.execute(
             f"""
             SELECT 
-                rowid,
-                xhtml_md,
-                bm25(fts_articles) as rank
-            FROM fts_articles
+                f.rowid,
+                f.xhtml_md,
+                bm25(fts_articles) as rank,
+                a.permalink
+            FROM fts_articles f
+            JOIN articles a ON a.id = f.rowid
             WHERE {where_clause}
             ORDER BY rank
             LIMIT ?
@@ -194,6 +198,7 @@ def search_lex_fts(
                 id=row[0],
                 xhtml_md=row[1],
                 rank=row[2],
+                permalink=row[3],
             )
             for row in cursor.fetchall()
         ]

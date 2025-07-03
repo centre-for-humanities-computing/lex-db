@@ -25,9 +25,9 @@ paths:
     get:
       tags:
       - lex-db
-      summary: Get Tables
+      summary: Get a list of tables in the database
       description: Get a list of tables in the database.
-      operationId: get_tables_api_tables_get
+      operationId: get_tables
       responses:
         '200':
           description: Successful Response
@@ -39,14 +39,14 @@ paths:
                     type: string
                   type: array
                 type: object
-                title: Response Get Tables Api Tables Get
+                title: Response Get Tables
   /api/vector-search/indexes/{index_name}/query:
     post:
       tags:
       - lex-db
-      summary: Vector Search
+      summary: Search a vector index for similar content to the query text
       description: Search a vector index for similar content to the query text.
-      operationId: vector_search_api_vector_search_indexes__index_name__query_post
+      operationId: vector_search
       parameters:
       - name: index_name
         in: path
@@ -77,11 +77,11 @@ paths:
     get:
       tags:
       - lex-db
-      summary: An endpoint for filtering articles based on metadata such as id, text
-        search, etc. Query parameters are used for filtering (e.g. GET /articles?query=RoundTower,
-        or GET /articles?id=[1,2,5])
-      description: "Filtr\xE9r artikler baseret p\xE5 teksts\xF8gning og/eller id."
-      operationId: get_articles_api_articles_get
+      summary: "An endpoint for filtering articles based on metadata such as id, text\
+        \ search, etc. Query parameters are used for filtering (e.g. GET /articles?query=Rundet\xE5\
+        rn, or GET /articles?ids=1&ids=2&ids=5)"
+      description: Filter articles based on metadata such as id, text search, etc.
+      operationId: get_articles
       parameters:
       - name: query
         in: query
@@ -93,19 +93,16 @@ paths:
           description: Text search in articles
           title: Query
         description: Text search in articles
-      - name: id
+      - name: ids
         in: query
         required: false
         schema:
           anyOf:
-          - type: array
-            items:
-              type: integer
-          - type: integer
+          - type: string
           - type: 'null'
-          description: List of article IDs
-          title: Id
-        description: List of article IDs
+          description: List of article IDs (comma-separated, JSON list, or repeated)
+          title: Ids
+        description: List of article IDs (comma-separated, JSON list, or repeated)
       - name: limit
         in: query
         required: false
@@ -136,7 +133,7 @@ paths:
       - lex-db
       summary: List all vector indexes and their metadata
       description: Return a list of all vector indexes and their metadata.
-      operationId: list_vector_indexes_api_vector_search_indexes_get
+      operationId: list_vector_indexes
       responses:
         '200':
           description: Successful Response
@@ -147,14 +144,14 @@ paths:
                   additionalProperties: true
                   type: object
                 type: array
-                title: Response List Vector Indexes Api Vector Search Indexes Get
+                title: Response List Vector Indexes
   /api/vector-search/indexes/{index_name}:
     get:
       tags:
       - lex-db
       summary: Get metadata for a specific vector index
       description: Return metadata for a specific vector index.
-      operationId: get_vector_index_api_vector_search_indexes__index_name__get
+      operationId: get_vector_index
       parameters:
       - name: index_name
         in: path
@@ -170,8 +167,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
-                title: Response Get Vector Index Api Vector Search Indexes  Index
-                  Name  Get
+                title: Response Get Vector Index
         '422':
           description: Validation Error
           content:
@@ -200,6 +196,11 @@ components:
         rank:
           type: number
           title: Rank
+        permalink:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Permalink
       type: object
       required:
       - id

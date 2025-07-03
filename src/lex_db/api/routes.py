@@ -1,8 +1,8 @@
 """API routes for Lex DB."""
 
 from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional, Union
+from fastapi import APIRouter, HTTPException, Query, Request
+from typing import Optional
 
 from src.lex_db.utils import get_logger
 import src.lex_db.database as db
@@ -17,7 +17,9 @@ logger = get_logger()
 router = APIRouter(prefix="/api", tags=["lex-db"])
 
 
-@router.get("/tables")
+@router.get(
+    "/tables", operation_id="get_tables", summary="Get a list of tables in the database"
+)
 async def get_tables() -> dict[str, list[str]]:
     """Get a list of tables in the database."""
     try:
@@ -39,7 +41,11 @@ class VectorSearchRequest(BaseModel):
     top_k: int = 5
 
 
-@router.post("/vector-search/indexes/{index_name}/query")
+@router.post(
+    "/vector-search/indexes/{index_name}/query",
+    operation_id="vector_search",
+    summary="Search a vector index for similar content to the query text",
+)
 async def vector_search(
     index_name: str, request: VectorSearchRequest
 ) -> VectorSearchResults:
@@ -73,37 +79,54 @@ async def vector_search(
 
 @router.get(
     "/articles",
-    summary="An endpoint for filtering articles based on metadata such as id, text search, etc. Query parameters are used for filtering (e.g. GET /articles?query=RoundTower, or GET /articles?id=[1,2,5])",
+    operation_id="get_articles",
+    summary="An endpoint for filtering articles based on metadata such as id, text search, etc. Query parameters are used for filtering (e.g. GET /articles?query=Rundetårn, or GET /articles?ids=1&ids=2&ids=5)",
 )
 async def get_articles(
+    request: Request,
     query: Optional[str] = Query(None, description="Text search in articles"),
-    id: Union[List[int], int, None] = Query(None, description="List of article IDs"),
+    ids: Optional[str] = Query(
+        None,
+        description="List of article IDs (comma-separated, JSON list, or repeated)",
+    ),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
 ) -> db.SearchResults:
     """
-    Filtrér artikler baseret på tekstsøgning og/eller id.
+    Filter articles based on metadata such as id, text search, etc.
     """
     try:
-        # Accept both single and multiple ids
-        ids = id if id is not None else None
-        if ids is not None and not isinstance(ids, list):
-            ids = [ids]
-        # Remove duplicates and None values
-        if ids:
-            ids = [i for i in ids if i is not None]
-            if len(ids) == 0:
-                ids = None
+        # Try to get all 'ids' parameters (repeated or single)
+        raw_ids = request.query_params.getlist("ids")
+        parsed_ids = None
+        if raw_ids:
+            # If repeated: /api/articles?ids=1&ids=2
+            if len(raw_ids) > 1:
+                try:
+                    parsed_ids = [int(x) for x in raw_ids]
+                except Exception:
+                    raise HTTPException(status_code=422, detail="Invalid ids format")
+            # If single: could be comma-separated or JSON list
+            else:
+                ids_str = raw_ids[0].strip()
+                try:
+                    if ids_str.startswith("[") and ids_str.endswith("]"):
+                        import json
 
+                        parsed_ids = json.loads(ids_str)
+                    else:
+                        parsed_ids = [int(x) for x in ids_str.split(",") if x.strip()]
+                except Exception:
+                    raise HTTPException(status_code=422, detail="Invalid ids format")
         # If only id filter is provided, fetch by id(s)
-        if ids and (not query or not query.strip()):
-            logger.info(f"Fetching articles by id: {ids}")
-            results = db.get_articles_by_ids(ids, limit=limit)
+        if parsed_ids and (not query or not query.strip()):
+            logger.info(f"Fetching articles by id: {parsed_ids}")
+            results = db.get_articles_by_ids(parsed_ids, limit=limit)
             return results
 
         # If only query or both query and id are provided
         if query and query.strip():
-            logger.info(f"Full-text search for: {query}, id filter: {ids}")
-            results = db.search_lex_fts(query=query, ids=ids, limit=limit)
+            logger.info(f"Full-text search for: {query}, id filter: {parsed_ids}")
+            results = db.search_lex_fts(query=query, ids=parsed_ids, limit=limit)
             return results
         raise ValueError(
             "At least one filter parameter ('query' or 'id') must be provided"
@@ -117,7 +140,9 @@ async def get_articles(
 
 
 @router.get(
-    "/vector-search/indexes", summary="List all vector indexes and their metadata"
+    "/vector-search/indexes",
+    operation_id="list_vector_indexes",
+    summary="List all vector indexes and their metadata",
 )
 async def list_vector_indexes() -> list[dict]:
     """Return a list of all vector indexes and their metadata."""
@@ -133,6 +158,7 @@ async def list_vector_indexes() -> list[dict]:
 
 @router.get(
     "/vector-search/indexes/{index_name}",
+    operation_id="get_vector_index",
     summary="Get metadata for a specific vector index",
 )
 async def get_vector_index(index_name: str) -> dict:
