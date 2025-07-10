@@ -90,7 +90,8 @@ class SearchResult(BaseModel):
     id: int
     xhtml_md: str
     rank: float
-    permalink: Optional[str] = None
+    url: Optional[str] = None
+    title: str
 
 
 class SearchResults(BaseModel):
@@ -99,6 +100,51 @@ class SearchResults(BaseModel):
     entries: list[SearchResult]
     total: int
     limit: int
+
+
+def get_url_base(encyclopedia_id: int) -> str:
+    match encyclopedia_id:
+        case 1:
+            return "https://denstoredanske.lex.dk/"
+        case 2:
+            return "https://trap.lex.dk/"
+        case 3:
+            return "https://biografiskleksikon.lex.dk/"
+        case 4:
+            return "https://gyldendalogpolitikensdanmarkshistorie.lex.dk/"
+        case 5:
+            return "https://danmarksoldtid.lex.dk/"
+        case 6:
+            return "https://teaterleksikon.lex.dk/"
+        case 7:
+            return "https://mytologi.lex.dk/"
+        case 8:
+            return "https://pattedyratlas.lex.dk/"
+        case 9:
+            return "https://dansklitteraturshistorie.lex.dk/"
+        case 10:
+            return "https://bornelitteratur.lex.dk/"
+        case 11:
+            return "https://symbolleksikon.lex.dk/"
+        case 12:
+            return "https://naturenidanmark.lex.dk/"
+        case 14:
+            return "https://om.lex.dk/"
+        case 15:
+            return "https://lex.dk/"
+        case 16:
+            return "https://kvindebiografiskleksikon.lex.dk/"
+        case 18:
+            return "https://trap-groenland.lex.dk/"
+        case 19:
+            return "https://trap-faeroeerne.lex.dk/"
+        case 20:
+            return "https://danmarkshistorien.lex.dk/"
+        case _:
+            logger.warning(
+                f"Encyclopedia id {encyclopedia_id} used, but there is no valid URL base for that ID."
+            )
+            return "https://lex.dk/"
 
 
 def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
@@ -118,7 +164,7 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
         total = cursor.fetchone()[0]
         cursor.execute(
             f"""
-            SELECT rowid, xhtml_md, 0.0 as rank, permalink
+            SELECT rowid, xhtml_md, 0.0 as rank, permalink, headword, encyclopedia_id
             FROM articles
             WHERE rowid IN ({placeholders})
             LIMIT ?
@@ -130,7 +176,8 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
                 id=row[0],
                 xhtml_md=row[1],
                 rank=row[2],
-                permalink=row[3],
+                url=get_url_base(int(row[5])) + row[3],
+                title=row[4],
             )
             for row in cursor.fetchall()
         ]
@@ -184,7 +231,9 @@ def search_lex_fts(
                 f.rowid,
                 f.xhtml_md,
                 bm25(fts_articles) as rank,
-                a.permalink
+                a.permalink,
+                a.headword,
+                a.encyclopedia_id
             FROM fts_articles f
             JOIN articles a ON a.id = f.rowid
             WHERE {where_clause}
@@ -198,7 +247,8 @@ def search_lex_fts(
                 id=row[0],
                 xhtml_md=row[1],
                 rank=row[2],
-                permalink=row[3],
+                url=get_url_base(int(row[5])) + row[3],
+                title=row[4],
             )
             for row in cursor.fetchall()
         ]

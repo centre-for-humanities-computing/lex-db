@@ -83,51 +83,45 @@ def db_conn(
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS articles (
                 id INTEGER PRIMARY KEY,
-                title TEXT,
+                headword TEXT,
                 content TEXT,
                 xhtml_md TEXT,
                 updated_at REAL,
-                permalink TEXT
+                permalink TEXT,
+                encyclopedia_id INTEGER
             )
         """)
         cursor.execute(
-            "INSERT INTO articles (title, content, xhtml_md, updated_at, permalink) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO articles (headword, content, xhtml_md, updated_at, permalink, encyclopedia_id) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 "Test Article 1",
                 "This is the first test article. It has some content.",
                 "# Test Article 1\n\nThis is the first test article. It has some content.",
                 1678886400.0,
-                "http://example.com/test-article-1",
+                "test-article-1",
+                1,
             ),
         )
         cursor.execute(
-            "INSERT INTO articles (title, content, xhtml_md, updated_at, permalink) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO articles (headword, content, xhtml_md, updated_at, permalink, encyclopedia_id) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 "Test Article 2",
                 "Second article for testing purposes. More content here.",
                 "# Test Article 2\n\nSecond article for testing purposes. More content here.",
                 1678886500.0,
-                "http://example.com/test-article-2",
+                "test-article-2",
+                15,
             ),
         )
         cursor.execute(
-            "INSERT INTO articles (title, content, xhtml_md, updated_at, permalink) VALUES (?, ?, ?, ?, ?)",
-            (
-                "Test Article 2",
-                "Second article for testing purposes. More content here.",
-                "# Test Article 2\n\nSecond article for testing purposes. More content here.",
-                1678886500.0,
-                "http://example.com/test-article-2",
-            ),
-        )
-        cursor.execute(
-            "INSERT INTO articles (title, content, xhtml_md, updated_at, permalink) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO articles (headword, content, xhtml_md, updated_at, permalink, encyclopedia_id) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 "Danish Article",
                 "This article contains Danish characters: æøå ÆØÅ",
                 "# Danish Article\n\nThis article contains Danish characters: æøå ÆØÅ",
                 1678886600.0,
-                "http://example.com/danish-article",
+                "danish-article",
+                20,
             ),
         )
         test_conn.commit()
@@ -491,10 +485,12 @@ def test_fts_triggers_insert(db_conn_with_fts: sqlite3.Connection) -> None:
 
     # Insert new article
     cursor.execute(
-        "INSERT INTO articles (title, xhtml_md) VALUES (?, ?)",
+        "INSERT INTO articles (headword, xhtml_md, permalink, encyclopedia_id) VALUES (?, ?, ?, ?)",
         (
             "New Test Article",
             "# New Test Article\n\nThis is a new article for testing FTS triggers.",
+            "new_test_article",
+            7,
         ),
     )
     db_conn_with_fts.commit()
