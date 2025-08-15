@@ -134,6 +134,8 @@ def get_url_base(encyclopedia_id: int) -> str:
             return "https://lex.dk/"
         case 16:
             return "https://kvindebiografiskleksikon.lex.dk/"
+        case 17:
+            return "https://medicin.lex.dk/"
         case 18:
             return "https://trap-groenland.lex.dk/"
         case 19:

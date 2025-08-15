@@ -129,7 +129,7 @@ async def get_articles(
             results = db.search_lex_fts(query=query, ids=parsed_ids, limit=limit)
             return results
         raise ValueError(
-            "At least one filter parameter ('query' or 'id') must be provided"
+            "At least one filter parameter ('query' or 'ids') must be provided"
         )
     except ValueError as e:
         logger.error(f"Validation error in article search: {str(e)}")
