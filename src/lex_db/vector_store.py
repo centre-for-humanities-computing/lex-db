@@ -115,7 +115,10 @@ def add_single_article_to_vector_index(
 
     cursor = db_conn.cursor()
     chunks = split_document_into_chunks(
-        article_text, chunk_size=chunk_size, overlap=chunk_overlap, chunking_strategy=chunking_strategy
+        article_text,
+        chunk_size=chunk_size,
+        overlap=chunk_overlap,
+        chunking_strategy=chunking_strategy,
     )
 
     if not chunks:
@@ -418,7 +421,7 @@ def update_vector_index(
     vector_index_name: str,
     source_table: str,
     text_column: str,
-    embedding_model_choice: EmbeddingModel, 
+    embedding_model_choice: EmbeddingModel,
     updated_at_column: str = "updated_at",
     chunk_size: int = 512,
     chunk_overlap: int = 50,
@@ -442,10 +445,13 @@ def update_vector_index(
     logger.info("Fetched existing article timestamps from vector index.")
 
     # Get all articles from the source table
-    cursor.execute(f"SELECT id, headword, {updated_at_column}, {text_column} FROM {source_table}")
+    cursor.execute(
+        f"SELECT id, headword, {updated_at_column}, {text_column} FROM {source_table}"
+    )
     logger.info("Fetching all articles from source table...")
     source_articles = {
-        str(row[0]): {"headword": row[1], "updated_at": row[2], "text": row[3]} for row in cursor.fetchall()
+        str(row[0]): {"headword": row[1], "updated_at": row[2], "text": row[3]}
+        for row in cursor.fetchall()
     }
     logger.info("Fetched all articles from source table.")
 
@@ -490,7 +496,10 @@ def update_vector_index(
         article_text = "# " + article["headword"] + "\n" + article["text"]
         if article_text:
             chunks = split_document_into_chunks(
-                article_text, chunk_size=chunk_size, overlap=chunk_overlap, chunking_strategy=chunking_strategy
+                article_text,
+                chunk_size=chunk_size,
+                overlap=chunk_overlap,
+                chunking_strategy=chunking_strategy,
             )
             chunks_to_create += [
                 (article_id, str(chunk_id), chunk_text)
@@ -533,6 +542,7 @@ def update_vector_index(
     logger.info(f"Update summary: {stats}")
     return stats
 
+
 def create_vector_index_metadata_table(db_conn: sqlite3.Connection) -> None:
     """Create the metadata table for vector indexes if it does not exist."""
     cursor = db_conn.cursor()
@@ -554,6 +564,7 @@ def create_vector_index_metadata_table(db_conn: sqlite3.Connection) -> None:
     )
     db_conn.commit()
 
+
 def insert_vector_index_metadata(
     db_conn: sqlite3.Connection,
     index_name: str,
@@ -563,7 +574,7 @@ def insert_vector_index_metadata(
     chunk_size: int,
     chunk_overlap: int,
     chunking_strategy: str,
-    updated_at_column: str = "changed_at", 
+    updated_at_column: str = "changed_at",
 ) -> None:
     """Insert metadata for a new vector index."""
     create_vector_index_metadata_table(db_conn)
@@ -589,6 +600,7 @@ def insert_vector_index_metadata(
         ),
     )
     db_conn.commit()
+
 
 def update_vector_index_metadata(
     db_conn: sqlite3.Connection,

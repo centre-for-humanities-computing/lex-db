@@ -8,17 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.lex_db.utils import get_logger, configure_logging, ChunkingStrategy
 from src.lex_db.embeddings import EmbeddingModel
-from src.lex_db.vector_store import create_vector_index, insert_vector_index_metadata
+from src.lex_db.vector_store import create_vector_index
 from src.lex_db.database import create_connection
 from src.lex_db.config import get_settings
 
 logger = get_logger()
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create an empty vector index structure (without populating it)"
     )
-    parser.add_argument("--index-name", "-i", required=True, help="Name for the new vector index")
+    parser.add_argument(
+        "--index-name", "-i", required=True, help="Name for the new vector index"
+    )
     parser.add_argument(
         "--embedding-model",
         "-e",
@@ -86,13 +89,16 @@ def main() -> None:
             chunking_strategy=ChunkingStrategy(args.chunking_strategy),
         )
 
-        logger.info("Vector index structure created! Use update_vector_indexes.py to populate it.")
+        logger.info(
+            "Vector index structure created! Use update_vector_indexes.py to populate it."
+        )
 
     except Exception as e:
         logger.error(f"Error creating vector index structure: {str(e)}", exc_info=True)
     finally:
         if "db_conn" in locals():
             db_conn.close()
+
 
 if __name__ == "__main__":
     main()
