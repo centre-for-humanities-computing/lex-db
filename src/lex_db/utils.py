@@ -112,9 +112,9 @@ def split_text_by_characters(text: str, chunk_size: int, overlap: int) -> list[s
 
     return chunks
 
+
 def split_text_by_sections(
-    text: str,
-    exclude_footer_pattern: str | None = r"(?s)Læs\s+mere\si\sLex.*?$"
+    text: str, exclude_footer_pattern: str | None = r"(?s)Læs\s+mere\si\sLex.*?$"
 ) -> list[str]:
     """
     Split text into chunks based on Markdown sections (headings), excluding footers.

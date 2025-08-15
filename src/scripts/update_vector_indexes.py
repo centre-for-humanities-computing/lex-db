@@ -1,4 +1,5 @@
 """CLI tool to update vector indexes with new, modified, or deleted content."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from src.lex_db.embeddings import EmbeddingModel
 
 logger = get_logger()
 
+
 def main() -> None:
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(
@@ -23,7 +25,9 @@ def main() -> None:
         "--index-name", "-i", required=True, help="Name of the vector index to update"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--batch-size", type=int, default=512, help="Batch size for processing")
+    parser.add_argument(
+        "--batch-size", type=int, default=512, help="Batch size for processing"
+    )
 
     args = parser.parse_args()
     configure_logging(args.debug)
@@ -60,7 +64,9 @@ def main() -> None:
             source_table=metadata["source_table"],
             text_column=metadata["source_column"],
             embedding_model_choice=EmbeddingModel(metadata["embedding_model"]),
-            updated_at_column=metadata.get("updated_at_column", "changed_at"),  # Optional override field
+            updated_at_column=metadata.get(
+                "updated_at_column", "changed_at"
+            ),  # Optional override field
             chunk_size=int(metadata["chunk_size"]),
             chunk_overlap=int(metadata["chunk_overlap"]),
             batch_size=args.batch_size,
