@@ -2,6 +2,7 @@
 
 import logging
 import tiktoken
+import re
 from enum import Enum
 
 # Configure logger
@@ -13,6 +14,7 @@ class ChunkingStrategy(str, Enum):
 
     TOKENS = "tokens"
     CHARACTERS = "characters"
+    SECTIONS = "sections"
 
 
 def get_logger() -> logging.Logger:
@@ -43,7 +45,7 @@ def configure_logging(debug: bool = False) -> None:
     lex_db_logger.setLevel(level)
 
 
-def count_tokens(text: str, model: str = "text-embedding-ada-002") -> int:
+def count_tokens(text: str, model: str = "text-embedding-3-small") -> int:
     """Count tokens in text using OpenAI's tokenizer."""
     try:
         # Get encoding for the model
@@ -56,7 +58,7 @@ def count_tokens(text: str, model: str = "text-embedding-ada-002") -> int:
 
 
 def split_text_by_tokens(
-    text: str, chunk_size: int, overlap: int, model: str = "text-embedding-ada-002"
+    text: str, chunk_size: int, overlap: int, model: str = "text-embedding-3-small"
 ) -> list[str]:
     """Split text into chunks based on token count."""
     if not text:
@@ -110,18 +112,64 @@ def split_text_by_characters(text: str, chunk_size: int, overlap: int) -> list[s
 
     return chunks
 
+def split_text_by_sections(
+    text: str,
+    exclude_footer_pattern: str | None = r"(?s)Læs\s+mere\si\sLex.*?$"
+) -> list[str]:
+    """
+    Split text into chunks based on Markdown sections (headings), excluding footers.
+    """
+    if not text.strip():
+        return []
+
+    # Step 1: Remove footer section (e.g. "Læs mere i Lex" and bullet list)
+    if exclude_footer_pattern:
+        text = re.sub(exclude_footer_pattern, "", text, flags=re.IGNORECASE)
+
+    # Step 2: Split on level 1 and 2 Markdown headings (e.g., ## Section)
+    # This regex captures: \n## Heading\n or \n# Heading\n
+    section_pattern = r"(\n#{1,2}\s+[^\n]+)"
+    parts = re.split(section_pattern, text)
+    chunks = []
+
+    # Process alternating heading/content parts
+    for i in range(0, len(parts)):
+        if i % 2 == 0:  # It's a heading (from capture group)
+            heading = parts[i].strip()
+            content = "" if i + 1 >= len(parts) else parts[i + 1].strip()
+            section_text = f"{heading}\n{content}".strip()
+            chunks.append(section_text)
+
+    # Clean up whitespace and duplicates
+    cleaned_chunks = []
+    seen = set()
+    for chunk in chunks:
+        stripped = chunk.strip()
+        if stripped:
+            # Avoid duplicate chunks (e.g. repeated headings)
+            if stripped not in seen:
+                seen.add(stripped)
+                cleaned_chunks.append(stripped)
+
+    logger = get_logger()
+    logger.debug(f"Split into {len(cleaned_chunks)} section chunks.")
+
+    return cleaned_chunks
+
 
 def split_document_into_chunks(
     text: str,
     chunk_size: int,
     overlap: int = 0,
-    method: ChunkingStrategy = ChunkingStrategy.TOKENS,
-    model: str = "text-embedding-ada-002",
+    chunking_strategy: ChunkingStrategy = ChunkingStrategy.TOKENS,
+    model: str = "text-embedding-3-large",
 ) -> list[str]:
     """Split a document into chunks with specified method, size and overlap."""
-    if method == ChunkingStrategy.TOKENS:
+    if chunking_strategy == ChunkingStrategy.TOKENS:
         return split_text_by_tokens(text, chunk_size, overlap, model)
-    elif method == ChunkingStrategy.CHARACTERS:
+    elif chunking_strategy == ChunkingStrategy.CHARACTERS:
         return split_text_by_characters(text, chunk_size, overlap)
+    elif chunking_strategy == ChunkingStrategy.SECTIONS:
+        return split_text_by_sections(text)
     else:
-        raise ValueError(f"Unsupported chunking method: {method}")
+        raise ValueError(f"Unsupported chunking method: {chunking_strategy}")

@@ -42,7 +42,7 @@ class OpenAIRateLimiter:
     """Rate limiter for OpenAI API calls."""
 
     def __init__(
-        self, max_requests_per_minute: int = 3000, max_tokens_per_minute: int = 1000000
+        self, max_requests_per_minute: int = 9000, max_tokens_per_minute: int = 40000000
     ):
         self.max_requests_per_minute = max_requests_per_minute
         self.max_tokens_per_minute = max_tokens_per_minute
@@ -239,6 +239,7 @@ def generate_embeddings(
 
                 if (i + 1) % 10 == 0:
                     logger.info(f"Completed {i + 1}/{len(batches)} batches")
+            logger.info(f"Completed {len(batches)}/{len(batches)} embeddings")
 
             return all_embeddings
 
