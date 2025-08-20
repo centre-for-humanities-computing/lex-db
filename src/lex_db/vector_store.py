@@ -5,8 +5,8 @@ import sqlite3
 from datetime import datetime
 
 from pydantic import BaseModel
-from src.lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
-from src.lex_db.embeddings import (
+from lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
+from lex_db.embeddings import (
     EmbeddingModel,
     generate_embeddings,
     get_embedding_dimensions,
@@ -21,9 +21,9 @@ def create_vector_index(
     db_conn: sqlite3.Connection,
     vector_index_name: str,
     embedding_model_choice: EmbeddingModel,
+    source_table: str,
+    source_column: str,
     force: bool = False,
-    source_table: str | None = None,
-    source_column: str | None = None,
     updated_at_column: str = "changed_at",
     chunk_size: int = 512,
     chunk_overlap: int = 50,
@@ -362,7 +362,7 @@ def search_vector_index(
     top_k: int = 5,
 ) -> VectorSearchResults:
     """Search a vector index for similar content to the query text."""
-    from src.lex_db.embeddings import EmbeddingModel
+    from lex_db.embeddings import EmbeddingModel
 
     cursor = db_conn.cursor()
 

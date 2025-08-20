@@ -2,18 +2,14 @@
 Script to populate vector_index_metadata for existing vector indexes.
 """
 
-import sys
-from pathlib import Path
 import sqlite3
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from src.lex_db.vector_store import insert_vector_index_metadata
-from src.lex_db.embeddings import EmbeddingModel
-from src.lex_db.utils import ChunkingStrategy
-from src.lex_db.config import get_settings
-from src.lex_db.database import create_connection
-from src.lex_db.utils import get_logger
+from lex_db.vector_store import insert_vector_index_metadata
+from lex_db.embeddings import EmbeddingModel
+from lex_db.utils import ChunkingStrategy
+from lex_db.config import get_settings
+from lex_db.database import create_connection
+from lex_db.utils import get_logger
 
 logger = get_logger()
 

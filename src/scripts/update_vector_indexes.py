@@ -1,17 +1,12 @@
 """CLI tool to update vector indexes with new, modified, or deleted content."""
 
 import argparse
-import sys
-from pathlib import Path
 
-# Adjust path to import local modules
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from src.lex_db.database import create_connection
-from src.lex_db.config import get_settings
-from src.lex_db.utils import get_logger, configure_logging
-from src.lex_db.vector_store import update_vector_index, get_vector_index_metadata
-from src.lex_db.embeddings import EmbeddingModel
+from lex_db.database import create_connection
+from lex_db.config import get_settings
+from lex_db.utils import get_logger, configure_logging
+from lex_db.vector_store import update_vector_index, get_vector_index_metadata
+from lex_db.embeddings import EmbeddingModel
 
 logger = get_logger()
 
@@ -26,7 +21,7 @@ def main() -> None:
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
-        "--batch-size", type=int, default=512, help="Batch size for processing"
+        "--batch-size", type=int, default=2048, help="Batch size for processing"
     )
 
     args = parser.parse_args()

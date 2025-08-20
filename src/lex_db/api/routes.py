@@ -4,9 +4,9 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
 
-from src.lex_db.utils import get_logger
-import src.lex_db.database as db
-from src.lex_db.vector_store import (
+from lex_db.utils import get_logger
+import lex_db.database as db
+from lex_db.vector_store import (
     VectorSearchResults,
     search_vector_index,
     get_all_vector_index_metadata,

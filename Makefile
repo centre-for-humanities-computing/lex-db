@@ -28,7 +28,7 @@ run: install generate-openapi-schema
 
 static-type-check:
 	@echo "--- 🔍 Running static type check ---"
-	uv run mypy . --explicit-package-bases
+	uv run mypy src
 
 lint:
 	@echo "--- 🧹 Formatting and linting codebase ---"
@@ -39,7 +39,6 @@ lint-check:
 	@echo "--- 🧐 Checking if project is formatted and linted ---"
 	uv run ruff format . --check
 	uv run ruff check .
-
 
 test:
 	@echo "--- 🧪 Running tests ---"
