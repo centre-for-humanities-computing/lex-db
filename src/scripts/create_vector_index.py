@@ -1,16 +1,12 @@
 """Script to create a vector index structure (without populating it) in the database."""
 
 import argparse
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from src.lex_db.utils import get_logger, configure_logging, ChunkingStrategy
-from src.lex_db.embeddings import EmbeddingModel
-from src.lex_db.vector_store import create_vector_index
-from src.lex_db.database import create_connection
-from src.lex_db.config import get_settings
+from lex_db.utils import get_logger, configure_logging, ChunkingStrategy
+from lex_db.embeddings import EmbeddingModel
+from lex_db.vector_store import create_vector_index
+from lex_db.database import create_connection
+from lex_db.config import get_settings
 
 logger = get_logger()
 

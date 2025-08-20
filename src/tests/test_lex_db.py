@@ -5,19 +5,21 @@ from pathlib import Path
 from typing import Generator
 
 import sqlite_vec
-from src.lex_db.api.routes import router
+from lex_db.utils import ChunkingStrategy
+from lex_db.api.routes import router
 from fastapi import FastAPI
 
-from src.lex_db.config import Settings
-from src.lex_db.vector_store import (
+from lex_db.config import Settings
+from lex_db.vector_store import (
     create_vector_index,
     add_single_article_to_vector_index,
+    create_vector_index_metadata_table,
     remove_article_from_vector_index,
     search_vector_index,
 )
-from src.lex_db.embeddings import EmbeddingModel, get_embedding_dimensions
-from src.lex_db.database import search_lex_fts, get_articles_by_ids
-from src.scripts.create_fts_index import (
+from lex_db.embeddings import EmbeddingModel, get_embedding_dimensions
+from lex_db.database import search_lex_fts, get_articles_by_ids
+from scripts.create_fts_index import (
     create_fts_tables,
     populate_fts_tables,
     optimize_fts_index,
@@ -47,9 +49,9 @@ def db_conn(
 
     test_settings = Settings(DATABASE_URL=Path(db_path), DEBUG=True)
 
-    monkeypatch.setattr("src.lex_db.config.get_settings", lambda: test_settings)
-    monkeypatch.setattr("src.lex_db.database.get_settings", lambda: test_settings)
-    monkeypatch.setattr("src.lex_db.database.get_db_path", lambda: Path(db_path))
+    monkeypatch.setattr("lex_db.config.get_settings", lambda: test_settings)
+    monkeypatch.setattr("lex_db.database.get_settings", lambda: test_settings)
+    monkeypatch.setattr("lex_db.database.get_db_path", lambda: Path(db_path))
 
     # Ensure the db file exists
     Path(db_path).touch()
@@ -71,9 +73,9 @@ def db_conn(
     def mock_get_db_connection() -> Generator[sqlite3.Connection, None, None]:
         yield test_conn
 
-    monkeypatch.setattr("src.lex_db.database.get_db_connection", mock_get_db_connection)
+    monkeypatch.setattr("lex_db.database.get_db_connection", mock_get_db_connection)
     # Also patch the contextmanager directly
-    monkeypatch.setattr("src.lex_db.database.create_connection", lambda: test_conn)
+    monkeypatch.setattr("lex_db.database.create_connection", lambda: test_conn)
 
     try:
         # Set up test tables
@@ -124,6 +126,8 @@ def db_conn(
                 20,
             ),
         )
+        # Make vector index metadata table
+        create_vector_index_metadata_table(test_conn)
         test_conn.commit()
         yield test_conn
     finally:
@@ -146,7 +150,14 @@ def test_create_vector_index_mock(db_conn: sqlite3.Connection) -> None:
     model_choice = EmbeddingModel.MOCK_MODEL
 
     # Create the vector index
-    create_vector_index(db_conn, index_name, model_choice, force=True)
+    create_vector_index(
+        db_conn,
+        index_name,
+        model_choice,
+        source_column="xhtml_md",
+        source_table="articles",
+        force=True,
+    )
 
     # Verify the index was created
     cursor = db_conn.cursor()
@@ -168,6 +179,7 @@ def test_create_vector_index_mock(db_conn: sqlite3.Connection) -> None:
         model_choice,
         chunk_size=20,
         chunk_overlap=5,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     # Check the structure and content
@@ -206,7 +218,14 @@ def test_add_and_remove_article_mock(db_conn: sqlite3.Connection) -> None:
     model_choice = EmbeddingModel.MOCK_MODEL
 
     # Create a new vector index
-    create_vector_index(db_conn, index_name, model_choice, force=True)
+    create_vector_index(
+        db_conn,
+        index_name,
+        model_choice,
+        source_column="xhtml_md",
+        source_table="articles",
+        force=True,
+    )
 
     article_rowid = "test_article_123"
     article_text = "A new article to be added and then removed."
@@ -220,6 +239,7 @@ def test_add_and_remove_article_mock(db_conn: sqlite3.Connection) -> None:
         model_choice,
         chunk_size=10,
         chunk_overlap=2,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     # Verify the article was added
@@ -247,7 +267,14 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
     model_choice = EmbeddingModel.MOCK_MODEL
 
     # Create the vector index
-    create_vector_index(db_conn, index_name, model_choice, force=True)
+    create_vector_index(
+        db_conn,
+        index_name,
+        model_choice,
+        source_column="xhtml_md",
+        source_table="articles",
+        force=True,
+    )
 
     # Add some articles to search
     article1_id = "1"
@@ -268,6 +295,7 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
         model_choice,
         chunk_size=20,
         chunk_overlap=5,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     add_single_article_to_vector_index(
@@ -278,6 +306,7 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
         model_choice,
         chunk_size=20,
         chunk_overlap=5,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     add_single_article_to_vector_index(
@@ -288,6 +317,7 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
         model_choice,
         chunk_size=20,
         chunk_overlap=5,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     # Search the vector index
@@ -311,7 +341,14 @@ def test_updated_article_in_vector_index(db_conn: sqlite3.Connection) -> None:
     model_choice = EmbeddingModel.MOCK_MODEL
 
     # Create the vector index
-    create_vector_index(db_conn, index_name, model_choice, force=True)
+    create_vector_index(
+        db_conn,
+        index_name,
+        model_choice,
+        source_column="xhtml_md",
+        source_table="articles",
+        force=True,
+    )
 
     article_id = "update_test_123"
     original_text = "Original article text."
@@ -319,7 +356,12 @@ def test_updated_article_in_vector_index(db_conn: sqlite3.Connection) -> None:
 
     # Add the original article
     add_single_article_to_vector_index(
-        db_conn, index_name, article_id, original_text, model_choice
+        db_conn,
+        index_name,
+        article_id,
+        original_text,
+        model_choice,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     # Get the original embedding
@@ -334,7 +376,12 @@ def test_updated_article_in_vector_index(db_conn: sqlite3.Connection) -> None:
 
     # Use a distinctly different text to ensure different embedding
     add_single_article_to_vector_index(
-        db_conn, index_name, article_id, updated_text, model_choice
+        db_conn,
+        index_name,
+        article_id,
+        updated_text,
+        model_choice,
+        chunking_strategy=ChunkingStrategy.TOKENS,
     )
 
     # Verify the embedding changed

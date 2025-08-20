@@ -114,7 +114,7 @@ def split_text_by_characters(text: str, chunk_size: int, overlap: int) -> list[s
 
 
 def split_text_by_sections(
-    text: str, exclude_footer_pattern: str | None = r"(?s)Læs\s+mere\si\sLex.*?$"
+    text: str, exclude_footer_pattern: str | None = r"(?s)#*Læs\s+mere\si\sLex.*?$"
 ) -> list[str]:
     """
     Split text into chunks based on Markdown sections (headings), excluding footers.
@@ -127,14 +127,14 @@ def split_text_by_sections(
         text = re.sub(exclude_footer_pattern, "", text, flags=re.IGNORECASE)
 
     # Step 2: Split on level 1 and 2 Markdown headings (e.g., ## Section)
-    # This regex captures: \n## Heading\n or \n# Heading\n
-    section_pattern = r"(\n#{1,2}\s+[^\n]+)"
+    # This regex captures: ## Heading\n or # Heading\n or ### Heading\n
+    section_pattern = r"(#{1,3}\s+[^\n]+)"
     parts = re.split(section_pattern, text)
     chunks = []
 
     # Process alternating heading/content parts
-    for i in range(0, len(parts)):
-        if i % 2 == 0:  # It's a heading (from capture group)
+    for i in range(1, len(parts)):
+        if i % 2 == 1:  # It's a heading (from capture group)
             heading = parts[i].strip()
             content = "" if i + 1 >= len(parts) else parts[i + 1].strip()
             section_text = f"{heading}\n{content}".strip()

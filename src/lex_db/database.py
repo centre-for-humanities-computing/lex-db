@@ -8,8 +8,8 @@ import sqlite_vec
 from contextlib import contextmanager
 from typing import Generator, Optional
 
-from src.lex_db.config import get_settings
-from src.lex_db.utils import get_logger
+from lex_db.config import get_settings
+from lex_db.utils import get_logger
 
 logger = get_logger()
 

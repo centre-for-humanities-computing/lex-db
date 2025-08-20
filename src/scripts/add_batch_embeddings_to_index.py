@@ -5,12 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from src.lex_db.database import create_connection
-from src.lex_db.config import get_settings
-from src.lex_db.utils import get_logger, configure_logging
-from src.lex_db.vector_store import (
+from lex_db.database import create_connection
+from lex_db.config import get_settings
+from lex_db.utils import get_logger, configure_logging
+from lex_db.vector_store import (
     validate_tables_exist,
     add_precomputed_embeddings_to_vector_index,
 )

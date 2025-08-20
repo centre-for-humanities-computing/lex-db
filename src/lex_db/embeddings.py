@@ -1,12 +1,13 @@
 """Embedding generation utilities for vector search in Lex DB."""
 
 from enum import Enum
+from typing import List, Optional, Tuple
 import numpy as np
 import time
 from collections import deque
 from threading import Lock
 import tiktoken
-from src.lex_db.utils import get_logger
+from lex_db.utils import get_logger
 
 logger = get_logger()
 
@@ -202,52 +203,60 @@ def generate_embeddings(
         try:
             from openai import OpenAI
             import os
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
             api_key = os.environ.get("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError(
-                    "OpenAI API key not found. Set the OPENAI_API_KEY environment variable."
-                )
+                raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY.")
 
             client = OpenAI(api_key=api_key)
-
-            # Use the enum value directly as the model name
             model_name = model_choice.value
 
-            logger.info(
-                f"Generating embeddings for {len(texts)} texts using OpenAI API ({model_name})"
-            )
-
-            # Create optimal batches to respect token limits
             batches = create_optimal_request_batches(texts, max_tokens_per_batch=8000)
-            logger.info(f"Split {len(texts)} texts into {len(batches)} batches")
+            logger.info(f"Split into {len(batches)} batches for parallel processing.")
 
+            all_results: List[Optional[List[List[float]]]] = [None] * len(batches)
+
+            def process_batch(
+                batch_idx_batch: Tuple[int, List[str]],
+            ) -> Tuple[int, Optional[List[List[float]]]]:
+                batch_idx, batch = batch_idx_batch
+                try:
+                    _openai_rate_limiter.wait_if_needed(batch)
+                    response = client.embeddings.create(input=batch, model=model_name)
+                    embeddings = [item.embedding for item in response.data]
+                    logger.debug(
+                        f"Batch {batch_idx} completed with {len(embeddings)} embeddings."
+                    )
+                    return batch_idx, embeddings
+                except Exception as e:
+                    logger.error(f"Error in batch {batch_idx}: {str(e)}")
+                    return batch_idx, None
+
+            max_workers = min(32, len(batches) + 4)  # Don't over-provision
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(process_batch, (i, batch))
+                    for i, batch in enumerate(batches)
+                ]
+                for future in as_completed(futures):
+                    batch_idx, result = future.result()
+                    if result is not None:
+                        all_results[batch_idx] = result
+            # Flatten results in correct order
             all_embeddings = []
+            for result in all_results:
+                if result is not None:
+                    all_embeddings.extend(result)
 
-            for i, batch in enumerate(batches):
-                # Wait for rate limits
-                _openai_rate_limiter.wait_if_needed(batch)
-
-                logger.debug(
-                    f"Processing batch {i + 1}/{len(batches)} with {len(batch)} texts"
-                )
-
-                response = client.embeddings.create(input=batch, model=model_name)
-
-                batch_embeddings = [item.embedding for item in response.data]
-                all_embeddings.extend(batch_embeddings)
-
-                if (i + 1) % 10 == 0:
-                    logger.info(f"Completed {i + 1}/{len(batches)} batches")
-            logger.info(f"Completed {len(batches)}/{len(batches)} embeddings")
-
+            logger.info(
+                f"Generated {len(all_embeddings)} embeddings from {len(batches)} batches."
+            )
             return all_embeddings
-
         except ImportError:
             raise ImportError("OpenAI package not installed. Install with 'uv sync'.")
         except Exception as e:
             raise ValueError(f"Error generating OpenAI embeddings: {str(e)}")
-
     else:
         raise ValueError(f"Unsupported embedding model: {model_choice}")
 
