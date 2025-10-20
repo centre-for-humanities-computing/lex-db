@@ -1,5 +1,6 @@
 """Main entry point for the Lex DB application."""
 
+import os
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
@@ -58,11 +59,13 @@ def main() -> None:
     Note: This function is intended to be run using UV:
     uv run main.py
     """
+    host = os.getenv("DEPLOY_DOMAIN", "0.0.0.0")
+    port = int(os.getenv("DEPLOY_PORT", "8000"))
     settings = get_settings()
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=host,
+        port=port,
         reload=settings.DEBUG,
     )
 
