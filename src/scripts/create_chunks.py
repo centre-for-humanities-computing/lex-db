@@ -1,49 +1,32 @@
 """
-EXTRACT CORPUS AND CREATE CHUNKS
+STEP 2 - CREATE SEMANTIC CHUNKS FROM CORPUS
 
-PURPOSE: Extract articles from database, clean them, and create semantic chunks
+PURPOSE: Load articles from corpus.jsonl and create semantic chunks from markdown content
 
-Features:
-- Extract 161K+ articles from database
-- Clean and validate articles
-- Split into semantic sections
-- Create overlapping chunks with sentence boundary alignment
-- Save chunks to JSONL format
-- Return chunks in memory
+INPUT: ./data/exports/corpus.jsonl
+OUTPUT: ./data/exports/chunks.jsonl (one chunk per line)
 
 Usage:
-    from create_chunks import create_chunks_from_database
-    
-    chunks = create_chunks_from_database()
+    python create_chunks.py
 """
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import json
 import re
-from typing import Tuple, List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+from pathlib import Path
 
 # ===============================================================
 # CONFIGURATION
 # ===============================================================
 
-# Extraction parameters
-MIN_TEXT_LENGTH = 10
-MIN_TEXT_WORDS = 3
+INPUT_FILE = "corpus.jsonl"
+OUTPUT_FILE = "chunks.jsonl"
 
 # Chunking parameters
 SMALL_CHUNK_SIZE = 250
 CHUNK_OVERLAP = 30
 REWIND_LIMIT = 50
 MIN_CHUNK_SIZE = 5
-
-# HTML metadata patterns to remove
-METADATA_PATTERNS = [
-    (r'Læs\s+mere\s+i\s+Lex\s*:\s*', 'læs_mere_text'),
-    (r'<h[2-6][^>]*>\s*Læs\s+mere\s+i\s+Lex\s*</h[2-6]>.*?(?=<h[1-6]|$)', 'læs_mere_heading'),
-    (r'<h[2-6][^>]*>\s*Se\s+også\s*</h[2-6]>.*?(?=<h[1-6]|$)', 'se_også_heading'),
-    (r'<h[2-6][^>]*>\s*Relateret\s*</h[2-6]>.*?(?=<h[1-6]|$)', 'relateret_heading'),
-    (r'<h[2-6][^>]*>\s*External\s+links?\s*</h[2-6]>.*?(?=<h[1-6]|$)', 'external_links_heading'),
-]
 
 # Danish abbreviations
 ABBREVIATIONS = {
@@ -56,149 +39,36 @@ ABBREVIATIONS = {
 
 
 # ===============================================================
-# EXTRACTION HELPER FUNCTIONS
+# HELPER FUNCTIONS
 # ===============================================================
 
-def clean_html(html_content: str) -> str:
-    """Clean HTML by removing metadata patterns"""
-    if not html_content:
-        return ""
-    
-    cleaned = html_content
-    
-    for pattern, name in METADATA_PATTERNS:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-    
-    cleaned = re.sub(r'\n\n\n+', '\n\n', cleaned)
-    cleaned = cleaned.strip()
-    
-    return cleaned
-
-
-def extract_text(html: str) -> str:
-    """Extract plain text from HTML"""
-    text = re.sub(r'<[^>]+>', '', html)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-
-def build_title(headword: str, clarification: Optional[str]) -> str:
-    """Build title from headword and clarification"""
-    if not headword:
-        return ""
-    
-    headword = headword.strip()
-    clarification = (clarification or "").strip()
-    
-    if not clarification or clarification.upper() == "NULL":
-        return headword
-    
-    return f"{headword} ({clarification})"
-
-
-def build_url(permalink: Optional[str]) -> str:
-    """Build URL from permalink"""
-    if not permalink:
-        return ""
-    
-    permalink = permalink.strip()
-    if not permalink:
-        return ""
-    
-    permalink = permalink.lstrip('/')
-    return f"https://lex.dk/{permalink}"
-
-
-def fetch_articles_from_database() -> Optional[List[Dict[str, Any]]]:
-    """Fetch all published articles from database"""
+def load_corpus(input_file: str) -> Optional[List[Dict]]:
+    """Load articles from JSONL corpus file"""
     try:
-        from lex_db.database import get_db_connection
+        articles = []
+        with open(input_file, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                try:
+                    article = json.loads(line)
+                    articles.append(article)
+                except json.JSONDecodeError as e:
+                    print(f"WARNING: Failed to parse line {line_num}: {e}")
+                    continue
         
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT id, headword, clarification, xhtml as html, 
-                       permalink, published_at, changed_at, language
-                FROM articles
-                WHERE state = 'published'
-            """)
-            
-            articles = []
-            for row in cursor.fetchall():
-                articles.append({
-                    'id': row[0],
-                    'headword': row[1],
-                    'clarification': row[2],
-                    'xhtml': row[3],
-                    'permalink': row[4],
-                    'published_at': row[5],
-                    'changed_at': row[6],
-                    'language': row[7]
-                })
-
-            return articles if articles else None
+        if not articles:
+            print(f"ERROR: No articles loaded from {input_file}")
+            return None
+        
+        print(f"Loaded {len(articles):,} articles from {input_file}")
+        return articles
     
+    except FileNotFoundError:
+        print(f"ERROR: Input file not found: {input_file}")
+        return None
     except Exception as e:
-        print(f"ERROR: Failed to fetch from database: {e}")
+        print(f"ERROR: Failed to load corpus: {e}")
         return None
 
-
-def extract_corpus(articles_raw: List[Dict]) -> List[Dict]:
-    """
-    Extract and clean corpus from raw articles
-    
-    Returns:
-        List of cleaned article dictionaries
-    """
-    articles_data = []
-    
-    for idx, row in enumerate(articles_raw):
-        try:
-            article_id = row.get('id')
-            headword = (row.get('headword') or "").strip()
-            clarification = (row.get('clarification') or "").strip()
-            html = (row.get('xhtml') or row.get('html') or "").strip()
-            permalink = (row.get('permalink') or "").strip()
-            published_at = row.get('published_at')
-            changed_at = row.get('changed_at')
-            language = row.get('language') or 'da'
-            
-            if not headword:
-                continue
-            
-            title = build_title(headword, clarification)
-            html_clean = clean_html(html)
-            text = extract_text(html_clean)
-            
-            text_words = len(text.split())
-            if len(text) < MIN_TEXT_LENGTH or text_words < MIN_TEXT_WORDS or not html_clean.strip():
-                continue
-            
-            url = build_url(permalink)
-            
-            article = {
-                'id': article_id,
-                'title': title,
-                'url': url,
-                'html': html_clean,
-                'language': language,
-                'published_at': published_at,
-                'changed_at': changed_at,
-            }
-            
-            articles_data.append(article)
-        
-        except Exception as e:
-            print(f"WARNING: Error processing article at index {idx}: {str(e)}")
-            continue
-    
-    return articles_data
-
-
-# ===============================================================
-# CHUNKING HELPER FUNCTIONS
-# ===============================================================
 
 def tokenize(text: str) -> List[str]:
     """Split text into tokens"""
@@ -208,109 +78,72 @@ def tokenize(text: str) -> List[str]:
 
 
 def clean_text(text: str) -> str:
-    """Remove HTML tags and normalize whitespace"""
+    """Clean and normalize whitespace from text"""
     if not text:
         return ""
-    text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
-def remove_unwanted_sections(html: str) -> str:
-    """Remove unwanted sections from HTML"""
-    if not html:
-        return html
+def remove_unwanted_sections(markdown: str) -> str:
+    """Remove unwanted sections from markdown"""
+    if not markdown:
+        return markdown
     
     unwanted_patterns = [
-        r'<h[2-6][^>]*>\s*Læs\s+mere\s+i\s+Lex\s*</h[2-6]>.*?(?=<h[1-6]|$)',
-        r'<h[2-6][^>]*>\s*Se\s+også\s*</h[2-6]>.*?(?=<h[1-6]|$)',
-        r'<h[2-6][^>]*>\s*Relateret\s*</h[2-6]>.*?(?=<h[1-6]|$)',
-        r'<h[2-6][^>]*>\s*Eksterne\s+links?\s*</h[2-6]>.*?(?=<h[1-6]|$)',
-        r'<h[2-6][^>]*>\s*External\s+links?\s*</h[2-6]>.*?(?=<h[1-6]|$)',
-        r'<h[2-6][^>]*>\s*Det\s+sker\s*</h[2-6]>.*?(?=<h[1-6]|$)',
+        r'#{2,6}\s+Læs\s+mere\s+i\s+Lex.*?(?=#{1,6}\s|$)',
+        r'#{2,6}\s+Se\s+også.*?(?=#{1,6}\s|$)',
+        r'#{2,6}\s+Relateret.*?(?=#{1,6}\s|$)',
+        r'#{2,6}\s+Eksterne\s+links?.*?(?=#{1,6}\s|$)',
+        r'#{2,6}\s+External\s+links?.*?(?=#{1,6}\s|$)',
+        r'#{2,6}\s+Det\s+sker.*?(?=#{1,6}\s|$)',
         r'Læs\s+mere\s+i\s+Lex\s*:\s*',
     ]
     
     for pattern in unwanted_patterns:
-        html = re.sub(pattern, '', html, flags=re.IGNORECASE | re.DOTALL)
+        markdown = re.sub(pattern, '', markdown, flags=re.IGNORECASE | re.DOTALL)
     
-    return html
+    return markdown
 
 
-def recover_first_section(section_text: str, title: str) -> str:
-    """Recover missing title parts at the start of the first section"""
-    if not section_text or not title:
-        return section_text
-    
-    section_text = section_text.strip()
-    title = title.strip()
-    
-    section_words = section_text.split()
-    if not section_words:
-        return section_text
-    
-    first_section_word = section_words[0]
-    first_section_word_lower = first_section_word.lower()
-    
-    if not first_section_word:
-        return section_text
-    
-    connecting_words = {
-        'er', 'var', 'blev', 'være', 'havde', 'har', 'ville', 'skulle', 'kan', 'må', 'vil',
-        'og', 'men', 'eller', 'der', 'som', 'hvis', 'når', 'hvor', 'hvad', 'hvem',
-        'i', 'på', 'til', 'fra', 'med', 'for', 'ved', 'uden', 'efter', 'før', 'over', 'under',
-        'samt', 'fordi', 'da', 'eftersom', 'imens'
-    }
-    
-    is_connecting_word = first_section_word[0].islower() and first_section_word_lower in connecting_words
-    
-    if is_connecting_word:
-        title_words = title.split()
-        for i, title_word in enumerate(title_words):
-            if title_word.lower() == first_section_word_lower:
-                if i > 0:
-                    missing_parts = ' '.join(title_words[:i])
-                    recovered_text = missing_parts + ' ' + section_text
-                    return recovered_text
-                return section_text
-        
-        recovered_text = title + ' ' + section_text
-        return recovered_text
-    
-    if first_section_word[0].isupper():
-        title_words = title.split()
-        section_first_word_clean = first_section_word.rstrip('.,;:!?').lower()
-        
-        if title_words and title_words[0].rstrip('.,;:!?').lower() == section_first_word_clean:
-            if len(title_words) > 1 and len(section_words) > 1:
-                second_section_word = section_words[1].rstrip('.,;:!?').lower()
-                if second_section_word in connecting_words:
-                    recovered_text = title + ' ' + ' '.join(section_words[1:])
-                    return recovered_text
-    
-    return section_text
-
-
-def split_by_headings(html: str) -> List[Tuple[str, str]]:
-    """Split HTML by heading tags (h2-h6)"""
-    if not html:
+def split_by_headings(markdown: str) -> List[Tuple[str, str]]:
+    """Split markdown by heading markers (# through ######)"""
+    if not markdown:
         return []
     
-    parts = re.split(r'(<h[2-6][^>]*>.*?</h[2-6]>)', html, flags=re.IGNORECASE | re.DOTALL)
+    # Split by markdown headings (# through ######)
+    parts = re.split(r'(#{1,6}\s+[^\n]*)', markdown, flags=re.IGNORECASE)
     sections = []
-    current_heading = ""
     
-    for part in parts:
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        
+        # Skip empty parts
         if not part or not part.strip():
+            i += 1
             continue
         
-        if re.match(r'<h[2-6]', part, re.IGNORECASE):
+        # Check if this is a heading (starts with 1-6 hashes)
+        if re.match(r'#{1,6}\s+', part, re.IGNORECASE):
             current_heading = clean_text(part)
-        else:
-            content = clean_text(part)
+            
+            # Get the next part as content
+            content = ""
+            if i + 1 < len(parts):
+                content = clean_text(parts[i + 1])
+                i += 2
+            else:
+                i += 1
+            
             if content:
                 sections.append((current_heading, content))
-                current_heading = ""
+        else:
+            # This is content without a heading
+            content = clean_text(part)
+            if content:
+                sections.append(("", content))
+            i += 1
     
     return sections
 
@@ -473,59 +306,60 @@ def chunk_section(section_text: str, section_heading: str, section_id: int, arti
     return chunks
 
 
+def save_chunks(chunks: List[Dict], output_file: str) -> bool:
+    """Save chunks to JSONL file"""
+    try:
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w', encoding='utf-8', errors='replace') as f:
+            for chunk in chunks:
+                f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
+        
+        print(f"Chunks saved to: {output_file}")
+        return True
+    
+    except Exception as e:
+        print(f"ERROR: Failed to save chunks: {e}")
+        return False
+
+
 # ===============================================================
-# MAIN PIPELINE
+# MAIN PROCESSING
 # ===============================================================
 
-def create_chunks_from_database() -> Optional[List[Dict]]:
+def create_chunks_from_articles(articles: Optional[List[Dict]] = None) -> Optional[List[Dict]]:
     """
-   Extract articles from database and create chunks
+    Create chunks from articles
+    
+    Args:
+        articles: List of article dictionaries. If None, loads from INPUT_FILE
     
     Returns:
         List of chunks as dictionaries, or None if failed
-    
-    Example:
-        from create_chunks import create_chunks_from_database
-        
-        chunks = create_chunks_from_database()
-        if chunks:
-            print(f"Created {len(chunks)} chunks")
     """
     
-    # STEP 1: Fetch articles from database
-    articles_raw = fetch_articles_from_database()
-    
-    if not articles_raw:
-        print("ERROR: Could not fetch articles from database")
-        return None
-    
-    # STEP 2: Extract and clean corpus
-    
-    articles_data = extract_corpus(articles_raw)
-    
-    if not articles_data:
-        print("ERROR: No articles extracted")
-        return None
-    
-    # STEP 3: Create chunks
+    # Load corpus if not provided
+    if articles is None:
+        articles = load_corpus(INPUT_FILE)
+        if not articles:
+            return None
     
     total_chunks = 0
     total_sections = 0
     skipped = 0
-    recovered = 0
     chunks_list = []
     
-    for article_idx, article in enumerate(articles_data):
+    for article_idx, article in enumerate(articles):
         try:
-            html = article.get('html', '')
+            markdown = article.get('content', '')
             title = article.get('title', '')
             
-            if not html or not html.strip():
+            if not markdown or not markdown.strip():
                 skipped += 1
                 continue
             
-            html = remove_unwanted_sections(html)
-            sections = split_by_headings(html)
+            markdown = remove_unwanted_sections(markdown)
+            sections = split_by_headings(markdown)
             
             if not sections:
                 skipped += 1
@@ -534,12 +368,6 @@ def create_chunks_from_database() -> Optional[List[Dict]]:
             total_sections += len(sections)
             
             for section_id, (heading, section_text) in enumerate(sections):
-                if section_id == 0:
-                    recovered_text = recover_first_section(section_text, article.get('title', ''))
-                    if recovered_text != section_text:
-                        recovered += 1
-                    section_text = recovered_text
-                
                 section_chunks = chunk_section(
                     section_text=section_text,
                     section_heading=heading,
@@ -556,9 +384,20 @@ def create_chunks_from_database() -> Optional[List[Dict]]:
             skipped += 1
             continue
     
+    print("="*80)
+    print("CHUNKING COMPLETE")
+    print("="*80)
+    print(f"Total chunks: {total_chunks:,}")
+    print(f"Total sections: {total_sections:,}")
+    print(f"Articles skipped: {skipped:,}")
+    print("="*80 + "\n")
+    
     return chunks_list if chunks_list else None
 
 
 if __name__ == "__main__":
-    chunks = create_chunks_from_database()
-    
+    chunks = create_chunks_from_articles()
+    if chunks:
+        if save_chunks(chunks, OUTPUT_FILE):
+            exit(0)
+    exit(1)
