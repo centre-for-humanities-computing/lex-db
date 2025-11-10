@@ -177,7 +177,7 @@ def split_text_by_semantic_chunks(
     # Configuration parameters
     min_chunk_size = 5
     rewind_limit = 50
-    chunk_overlap = 30
+    overlap = 30
 
     # Helper: Clean and normalize whitespace
     def clean_text(text_input):
@@ -273,7 +273,7 @@ def split_text_by_semantic_chunks(
             if is_sentence_end(token, next_token):
                 return i + 1
         
-        minimum_overlap_start = target_idx - chunk_overlap
+        minimum_overlap_start = target_idx - overlap
         return minimum_overlap_start if minimum_overlap_start >= 0 else 0
 
     # Helper: Reconstruct text from tokens with proper punctuation spacing
