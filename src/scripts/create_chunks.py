@@ -1,32 +1,50 @@
 """
-STEP 2 - CREATE SEMANTIC CHUNKS FROM CORPUS
+EXTRACT CORPUS FROM DATABASE AND CREATE SEMANTIC CHUNKS FROM MARKDOWN
 
-PURPOSE: Load articles from corpus.jsonl and create semantic chunks from markdown content
+PURPOSE: Extract articles from database using xhtml_md (markdown) field, 
+         clean them, and create semantic chunks
 
-INPUT: ./data/exports/corpus.jsonl
-OUTPUT: ./data/exports/chunks.jsonl (one chunk per line)
+Features:
+- Extract 161K+ articles from database
+- Work with markdown content (xhtml_md field)
+- Split into semantic sections using markdown headings (# to ######)
+- Create overlapping chunks with sentence boundary alignment
+- Return chunks in memory
 
 Usage:
-    python create_chunks.py
+    from create_chunks import create_chunks_from_database
+    chunks = create_chunks_from_database()
 """
 
-import json
+import os
+os.environ['DATABASE_URL'] = str(__import__('pathlib').Path(__file__).resolve().parent.parent.parent / 'lex_1.2.2.db')
 import re
-from typing import List, Optional, Dict, Any, Tuple
-from pathlib import Path
+from typing import Tuple, List, Optional, Dict, Any
 
 # ===============================================================
 # CONFIGURATION
 # ===============================================================
 
-INPUT_FILE = "corpus.jsonl"
-OUTPUT_FILE = "chunks.jsonl"
+# Extraction parameters
+MIN_TEXT_LENGTH = 10
+MIN_TEXT_WORDS = 3
 
 # Chunking parameters
 SMALL_CHUNK_SIZE = 250
 CHUNK_OVERLAP = 30
 REWIND_LIMIT = 50
 MIN_CHUNK_SIZE = 5
+
+# Markdown metadata patterns to remove
+METADATA_PATTERNS = [
+    r'#{2,6}\s+Læs\s+mere\s+i\s+Lex.*?(?=#{1,6}\s|$)',
+    r'#{2,6}\s+Se\s+også.*?(?=#{1,6}\s|$)',
+    r'#{2,6}\s+Relateret.*?(?=#{1,6}\s|$)',
+    r'#{2,6}\s+Eksterne\s+links?.*?(?=#{1,6}\s|$)',
+    r'#{2,6}\s+External\s+links?.*?(?=#{1,6}\s|$)',
+    r'#{2,6}\s+Det\s+sker.*?(?=#{1,6}\s|$)',
+    r'Læs\s+mere\s+i\s+Lex\s*:\s*',
+]
 
 # Danish abbreviations
 ABBREVIATIONS = {
@@ -39,36 +57,145 @@ ABBREVIATIONS = {
 
 
 # ===============================================================
-# HELPER FUNCTIONS
+# EXTRACTION HELPER FUNCTIONS
 # ===============================================================
 
-def load_corpus(input_file: str) -> Optional[List[Dict]]:
-    """Load articles from JSONL corpus file"""
-    try:
-        articles = []
-        with open(input_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                try:
-                    article = json.loads(line)
-                    articles.append(article)
-                except json.JSONDecodeError as e:
-                    print(f"WARNING: Failed to parse line {line_num}: {e}")
-                    continue
-        
-        if not articles:
-            print(f"ERROR: No articles loaded from {input_file}")
-            return None
-        
-        print(f"Loaded {len(articles):,} articles from {input_file}")
-        return articles
+def clean_markdown(markdown_content: str) -> str:
+    """Clean markdown by removing unwanted sections"""
+    if not markdown_content:
+        return ""
     
-    except FileNotFoundError:
-        print(f"ERROR: Input file not found: {input_file}")
-        return None
+    cleaned = markdown_content
+    
+    for pattern in METADATA_PATTERNS:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    
+    cleaned = re.sub(r'\n\n\n+', '\n\n', cleaned)
+    cleaned = cleaned.strip()
+    
+    return cleaned
+
+
+def build_title(headword: str, clarification: Optional[str]) -> str:
+    """Build title from headword and clarification"""
+    if not headword:
+        return ""
+    
+    headword = headword.strip()
+    clarification = (clarification or "").strip()
+    
+    if not clarification or clarification.upper() == "NULL":
+        return headword
+    
+    return f"{headword} ({clarification})"
+
+
+def build_url(permalink: Optional[str]) -> str:
+    """Build URL from permalink"""
+    if not permalink:
+        return ""
+    
+    permalink = permalink.strip()
+    if not permalink:
+        return ""
+    
+    permalink = permalink.lstrip('/')
+    return f"https://lex.dk/{permalink}"
+
+
+def fetch_articles_from_database() -> Optional[List[Dict[str, Any]]]:
+    """Fetch all published articles from database with markdown content"""
+    try:
+        from lex_db.database import get_db_connection
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, headword, clarification, xhtml_md as markdown, 
+                       permalink, published_at, changed_at, language
+                FROM articles
+                WHERE state = 'published'
+            """)
+            
+            articles = []
+            for row in cursor.fetchall():
+                articles.append({
+                    'id': row[0],
+                    'headword': row[1],
+                    'clarification': row[2],
+                    'markdown': row[3],
+                    'permalink': row[4],
+                    'published_at': row[5],
+                    'changed_at': row[6],
+                    'language': row[7]
+                })
+
+            return articles if articles else None
+    
     except Exception as e:
-        print(f"ERROR: Failed to load corpus: {e}")
+        print(f"ERROR: Failed to fetch from database: {e}")
         return None
 
+
+def extract_corpus(articles_raw: List[Dict]) -> List[Dict]:
+    """
+    Extract and clean corpus from raw articles
+    
+    Returns:
+        List of cleaned article dictionaries
+    """
+    articles_data = []
+    
+    for idx, row in enumerate(articles_raw):
+        try:
+            article_id = row.get('id')
+            headword = (row.get('headword') or "").strip()
+            clarification = (row.get('clarification') or "").strip()
+            markdown = (row.get('markdown') or "").strip()
+            permalink = (row.get('permalink') or "").strip()
+            published_at = row.get('published_at')
+            changed_at = row.get('changed_at')
+            language = row.get('language') or 'da'
+            
+            if not headword:
+                continue
+            
+            title = build_title(headword, clarification)
+            markdown_clean = clean_markdown(markdown)
+            
+            # Extract plain text for validation
+            text = re.sub(r'[#\*\[\]`_~]', '', markdown_clean)
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            text_words = len(text.split())
+            if len(text) < MIN_TEXT_LENGTH or text_words < MIN_TEXT_WORDS or not markdown_clean.strip():
+                continue
+            
+            url = build_url(permalink)
+            
+            article = {
+                'id': article_id,
+                'title': title,
+                'url': url,
+                'content': markdown_clean,  # Markdown content
+                'language': language,
+                'published_at': published_at,
+                'changed_at': changed_at,
+            }
+            
+            articles_data.append(article)
+        
+        except Exception as e:
+            print(f"WARNING: Error processing article at index {idx}: {str(e)}")
+            continue
+    
+    return articles_data
+
+
+# ===============================================================
+# CHUNKING HELPER FUNCTIONS
+# ===============================================================
 
 def tokenize(text: str) -> List[str]:
     """Split text into tokens"""
@@ -306,50 +433,47 @@ def chunk_section(section_text: str, section_heading: str, section_id: int, arti
     return chunks
 
 
-def save_chunks(chunks: List[Dict], output_file: str) -> bool:
-    """Save chunks to JSONL file"""
-    try:
-        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_file, 'w', encoding='utf-8', errors='replace') as f:
-            for chunk in chunks:
-                f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
-        
-        print(f"Chunks saved to: {output_file}")
-        return True
-    
-    except Exception as e:
-        print(f"ERROR: Failed to save chunks: {e}")
-        return False
-
-
 # ===============================================================
-# MAIN PROCESSING
+# MAIN PIPELINE
 # ===============================================================
 
-def create_chunks_from_articles(articles: Optional[List[Dict]] = None) -> Optional[List[Dict]]:
+def create_chunks_from_database() -> Optional[List[Dict]]:
     """
-    Create chunks from articles
-    
-    Args:
-        articles: List of article dictionaries. If None, loads from INPUT_FILE
+    Extract articles from database using markdown content and create chunks
     
     Returns:
         List of chunks as dictionaries, or None if failed
+    
+    Example:
+        from create_chunks_markdown import create_chunks_from_database
+        
+        chunks = create_chunks_from_database()
     """
     
-    # Load corpus if not provided
-    if articles is None:
-        articles = load_corpus(INPUT_FILE)
-        if not articles:
-            return None
+    # STEP 1: Fetch articles from database
+    articles_raw = fetch_articles_from_database()
+    
+    if not articles_raw:
+        print("ERROR: Could not fetch articles from database")
+        return None
+    
+    # STEP 2: Extract and clean corpus
+    
+    articles_data = extract_corpus(articles_raw)
+    
+    if not articles_data:
+        print("ERROR: No articles extracted")
+        return None
+    
+    
+    # STEP 3: Create chunks
     
     total_chunks = 0
     total_sections = 0
     skipped = 0
     chunks_list = []
     
-    for article_idx, article in enumerate(articles):
+    for article_idx, article in enumerate(articles_data):
         try:
             markdown = article.get('content', '')
             title = article.get('title', '')
@@ -384,20 +508,12 @@ def create_chunks_from_articles(articles: Optional[List[Dict]] = None) -> Option
             skipped += 1
             continue
     
-    print("="*80)
-    print("CHUNKING COMPLETE")
-    print("="*80)
-    print(f"Total chunks: {total_chunks:,}")
-    print(f"Total sections: {total_sections:,}")
-    print(f"Articles skipped: {skipped:,}")
-    print("="*80 + "\n")
-    
     return chunks_list if chunks_list else None
 
 
 if __name__ == "__main__":
-    chunks = create_chunks_from_articles()
+    chunks = create_chunks_from_database()
     if chunks:
-        if save_chunks(chunks, OUTPUT_FILE):
-            exit(0)
-    exit(1)
+        print(f"Successfully created {len(chunks):,} chunks")
+    else:
+        print("Failed to create chunks")
