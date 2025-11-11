@@ -4,9 +4,24 @@ import logging
 import tiktoken
 import re
 from enum import Enum
+from sentence_splitter import SentenceSplitter  # type: ignore
 
 # Configure logger
 logger = logging.getLogger("lex_db")
+
+# Initialize sentence splitter for Danish
+SENTENCE_SPLITTER = SentenceSplitter(language="da")
+
+# Markdown metadata patterns to remove
+METADATA_PATTERNS = [
+    r"#{2,6}\s+Læs\s+mere\s+i\s+Lex.*?(?=#{1,6}\s|$)",
+    r"#{2,6}\s+Se\s+også.*?(?=#{1,6}\s|$)",
+    r"#{2,6}\s+Relateret.*?(?=#{1,6}\s|$)",
+    r"#{2,6}\s+Eksterne\s+links?.*?(?=#{1,6}\s|$)",
+    r"#{2,6}\s+External\s+links?.*?(?=#{1,6}\s|$)",
+    r"#{2,6}\s+Det\s+sker.*?(?=#{1,6}\s|$)",
+    r"Læs\s+mere\s+i\s+Lex\s*:\s*",
+]
 
 
 class ChunkingStrategy(str, Enum):
@@ -114,11 +129,28 @@ def split_text_by_characters(text: str, chunk_size: int, overlap: int) -> list[s
     return chunks
 
 
+def clean_markdown(markdown_content: str) -> str:
+    """Clean markdown by removing unwanted sections."""
+    if not markdown_content:
+        return ""
+
+    cleaned = markdown_content
+
+    for pattern in METADATA_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    cleaned = re.sub(r"\n\n\n+", "\n\n", cleaned)
+    cleaned = cleaned.strip()
+
+    return cleaned
+
+
 def split_text_by_sections(
     text: str, exclude_footer_pattern: str | None = r"(?s)#*Læs\s+mere\si\sLex.*?$"
 ) -> list[str]:
     """
     Split text into chunks based on Markdown sections (headings), excluding footers.
+    Returns list of strings with heading and content combined.
     """
     if not text.strip():
         return []
@@ -152,223 +184,176 @@ def split_text_by_sections(
                 seen.add(stripped)
                 cleaned_chunks.append(stripped)
 
-    logger = get_logger()
-    logger.debug(f"Split into {len(cleaned_chunks)} section chunks.")
+    logger_instance = get_logger()
+    logger_instance.debug(f"Split into {len(cleaned_chunks)} section chunks.")
 
     return cleaned_chunks
 
 
 def split_text_by_semantic_chunks(
-    text: str, chunk_size: int, overlap: int, model: str = "text-embedding-3-small"
+    text: str,
+    chunk_size: int = 250,
+    overlap: int = 30,
+    model: str = "text-embedding-3-small",
+    min_chunk_size: int = 5,
 ) -> list[str]:
-    """Split text into chunks based on semantic boundaries with sentence detection."""
+    """
+    Split text into semantic chunks using Danish sentence segmentation.
+    Enforces min_chunk_size and chunk_size limits, with overlap between chunks.
+    """
+
     if not text:
         return []
 
-    # Danish abbreviations for sentence detection
-    abbreviations = {
-        'bl.a.', 'dvs.', 'f.eks.', 'etc.', 'ca.', 'mht.', 'nr.', 'kap.', 'art.', 'stk.', 'al.', 'forts.',
-        'dir.', 'vej.', 'skt.', 'sml.', 'udg.', 'red.', 'opr.', 'bearb.',
-        'genv.', 'osv.', 'igennem', 'omkring',
-        'u.s.', 'u.s.a.', 'u.k.', 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.',
-        'inc.', 'ltd.', 'co.', 'corp.', 'vs.', 'no.', 'pp.', 'eg.', 'ie.', 'etc',
-    }
+    logger_instance = get_logger()
 
-    # Configuration parameters
-    min_chunk_size = 5
-    rewind_limit = 50
-    overlap = 30
+    # ---------- Helper functions inside ----------
 
-    # Helper: Clean and normalize whitespace
-    def clean_text(text_input):
-        if not text_input:
+    def clean_markdown(markdown_content: str) -> str:
+        """Remove Lex metadata sections and normalize whitespace."""
+        if not markdown_content:
             return ""
-        text_input = re.sub(r'\s+', ' ', text_input).strip()
-        return text_input
+        cleaned = markdown_content
+        for pattern in METADATA_PATTERNS:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        return re.sub(r"\n\n\n+", "\n\n", cleaned).strip()
 
-    # Helper: Remove unwanted sections from markdown
-    def remove_unwanted_sections(markdown):
-        if not markdown:
-            return markdown
-        
-        unwanted_patterns = [
-            r'#{2,6}\s+Læs\s+mere\s+i\s+Lex.*?(?=#{1,6}\s|$)',
-            r'#{2,6}\s+Se\s+også.*?(?=#{1,6}\s|$)',
-            r'#{2,6}\s+Relateret.*?(?=#{1,6}\s|$)',
-            r'#{2,6}\s+Eksterne\s+links?.*?(?=#{1,6}\s|$)',
-            r'#{2,6}\s+External\s+links?.*?(?=#{1,6}\s|$)',
-            r'#{2,6}\s+Det\s+sker.*?(?=#{1,6}\s|$)',
-            r'Læs\s+mere\s+i\s+Lex\s*:\s*',
-        ]
-        
-        for pattern in unwanted_patterns:
-            markdown = re.sub(pattern, '', markdown, flags=re.IGNORECASE | re.DOTALL)
-        
-        return markdown
-
-    # Helper: Split markdown by heading markers
-    def split_by_headings(markdown):
-        if not markdown:
+    def split_text_by_sections_with_headings(md_text: str) -> list[tuple[str, str]]:
+        """Split markdown into (heading, content) pairs."""
+        if not md_text.strip():
             return []
-        
-        parts = re.split(r'(#{1,6}\s+[^\n]*)', markdown, flags=re.IGNORECASE)
-        sections = []
-        
+
+        md_text = re.sub(
+            r"(?s)#*Læs\s+mere\si\sLex.*?$", "", md_text, flags=re.IGNORECASE
+        )
+        parts = re.split(r"(#{1,6}\s+[^\n]+)", md_text)
+
+        sections, seen = [], set()
         i = 0
         while i < len(parts):
-            part = parts[i]
-            
-            if not part or not part.strip():
+            part = parts[i].strip()
+            if not part:
                 i += 1
                 continue
-            
-            if re.match(r'#{1,6}\s+', part, re.IGNORECASE):
-                current_heading = clean_text(part)
-                
-                content = ""
-                if i + 1 < len(parts):
-                    content = clean_text(parts[i + 1])
-                    i += 2
-                else:
-                    i += 1
-                
-                if content:
-                    sections.append((current_heading, content))
+            if re.match(r"#{1,6}\s+", part):
+                heading = part
+                content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+                i += 2
             else:
-                content = clean_text(part)
-                if content:
-                    sections.append(("", content))
+                heading, content = "", part
                 i += 1
-        
+            key = (heading, content)
+            if key not in seen:
+                seen.add(key)
+                sections.append(key)
+
+        logger_instance.debug(f"Split into {len(sections)} sections.")
         return sections
 
-    # Helper: Check if token ends a sentence
-    def is_sentence_end(token, next_token=None):
-        if not token or not re.search(r'[.!?;]+$', token):
-            return False
-        if token.lower() in abbreviations:
-            return False
-        if next_token and len(next_token) > 0:
-            if next_token[0].isalpha():
-                if next_token[0].islower():
-                    return False
-            else:
-                return False
-        return True
+    def tokenize(text_input: str) -> list[str]:
+        """Tokenize text by splitting on whitespace."""
+        return text_input.split() if text_input else []
 
-    # Helper: Find nearest sentence boundary
-    def find_chunk_boundary(tokens, target_idx):
-        if target_idx >= len(tokens):
-            return len(tokens)
-        if target_idx < 0:
-            return 0
-        
-        rewind_threshold = max(0, target_idx - rewind_limit)
-        
-        for i in range(target_idx, rewind_threshold - 1, -1):
-            if i < 0 or i >= len(tokens):
-                continue
-            token = tokens[i]
-            next_token = tokens[i + 1] if i + 1 < len(tokens) else None
-            if is_sentence_end(token, next_token):
-                return i + 1
-        
-        minimum_overlap_start = target_idx - overlap
-        return minimum_overlap_start if minimum_overlap_start >= 0 else 0
-
-    # Helper: Reconstruct text from tokens with proper punctuation spacing
-    def reconstruct_text(tokens):
+    def reconstruct_text(tokens: list[str]) -> str:
+        """Rebuild text with correct spacing for punctuation."""
         if not tokens:
             return ""
-        
-        no_space_before = {',', '.', '!', '?', ';', ':', ')', ']', '}', '"', "'"}
-        no_space_after = {'(', '[', '{', '"', "'"}
-        
+        NO_SPACE_BEFORE = {",", ".", "!", "?", ";", ":", ")", "]", "}", '"', "'"}
+        NO_SPACE_AFTER = {"(", "[", "{", '"', "'"}
         result = tokens[0]
         for token in tokens[1:]:
-            if token in no_space_before or (result and result[-1] in no_space_after):
+            if token in NO_SPACE_BEFORE or result[-1] in NO_SPACE_AFTER:
                 result += token
             else:
-                result += ' ' + token
-        
+                result += " " + token
         return result
 
-    # Helper: Chunk a single section
-    def chunk_section(section_text, section_heading):
-        if not section_text or not section_text.strip():
+    def chunk_section(section_heading: str, section_text: str) -> list[str]:
+        """Split one section into chunks with overlap and size limits."""
+        if not section_text.strip():
             return []
-        
-        section_text = section_text.strip()
-        tokens = section_text.split()
-        
-        if len(tokens) == 0:
-            return []
-        
-        if len(tokens) < min_chunk_size:
-            text = reconstruct_text(tokens)
-            return [text]
-        
-        chunks = []
-        chunk_idx = 0
-        start_idx = 0
-        
-        full_section_text = reconstruct_text(tokens)
-        if section_heading:
-            section_context = section_heading + "\n" + full_section_text
-        else:
-            section_context = full_section_text
-        
-        while start_idx < len(tokens):
-            theoretical_end_idx = min(start_idx + chunk_size, len(tokens))
-            end_idx = find_chunk_boundary(tokens, theoretical_end_idx)
-            
-            if end_idx - start_idx < min_chunk_size:
-                end_idx = min(start_idx + min_chunk_size, len(tokens))
-            
-            chunk_tokens = tokens[start_idx:end_idx]
-            chunk_text = reconstruct_text(chunk_tokens)
-            
-            if not chunk_text.strip():
-                start_idx = end_idx
-                continue
-            
-            final_chunk_text = chunk_text.strip()
-            if chunk_idx == 0 and section_heading:
-                final_chunk_text = section_heading + " " + final_chunk_text
-            
-            chunks.append(final_chunk_text)
-            chunk_idx += 1
-            
-            if end_idx >= len(tokens):
-                break
-            
-            next_start_theoretical = start_idx + (chunk_size - overlap)
-            new_start_idx = find_chunk_boundary(tokens, next_start_theoretical)
-            
-            if new_start_idx <= start_idx:
-                new_start_idx = min(start_idx + 1, len(tokens))
-            
-            start_idx = new_start_idx
-        
-        return chunks
 
-    # Main processing workflow
-    markdown = text
-    markdown = remove_unwanted_sections(markdown)
-    sections = split_by_headings(markdown)
-    
+        try:
+            sentences = SENTENCE_SPLITTER.split(text=section_text)
+            if not sentences:
+                return []
+
+            sentence_tokens = [tokenize(s) for s in sentences]
+            total_tokens = sum(len(t) for t in sentence_tokens)
+
+            if total_tokens < min_chunk_size:
+                return []
+            if total_tokens < chunk_size:
+                chunk = reconstruct_text([t for s in sentence_tokens for t in s])
+                if section_heading and chunk and chunk[0].islower():
+                    chunk = section_heading + " " + chunk
+                return [chunk]
+
+            chunks: list[str] = []
+            current: list[list[str]] = []
+            count: int = 0
+            for sent_tokens in sentence_tokens:
+                sent_len = len(sent_tokens)
+                if count + sent_len >= chunk_size and count >= min_chunk_size:
+                    chunk_tokens = [t for s in current for t in s]
+                    chunk_text = reconstruct_text(chunk_tokens)
+                    if (
+                        section_heading
+                        and chunk_text
+                        and chunk_text[0].islower()
+                        and not chunks
+                    ):
+                        chunk_text = section_heading + " " + chunk_text
+                    chunks.append(chunk_text)
+
+                    # Overlap logic
+                    overlap_sentences: list[list[str]] = []
+                    overlap_count: int = 0
+                    for s in reversed(current):
+                        slen = len(s)
+                        if overlap_count + slen <= overlap:
+                            overlap_sentences.insert(0, s)
+                            overlap_count += slen
+                        else:
+                            break
+                    current = overlap_sentences
+                    count = overlap_count
+
+                current.append(sent_tokens)
+                count += sent_len
+
+            # Last chunk
+            if current and count >= min_chunk_size:
+                chunk_tokens = [t for s in current for t in s]
+                chunk_text = reconstruct_text(chunk_tokens)
+                if (
+                    section_heading
+                    and chunk_text
+                    and chunk_text[0].islower()
+                    and not chunks
+                ):
+                    chunk_text = section_heading + " " + chunk_text
+                chunks.append(chunk_text)
+
+            return chunks
+
+        except Exception as e:
+            logger_instance.warning(f"Error chunking section: {e}")
+            return []
+
+    # ---------- End of helper functions ----------
+
+    cleaned_text = clean_markdown(text)
+    sections = split_text_by_sections_with_headings(cleaned_text)
     if not sections:
         return []
-    
-    all_chunks = []
-    
-    for section_heading, section_text in sections:
-        section_chunks = chunk_section(section_text, section_heading)
-        all_chunks.extend(section_chunks)
-    
-    logger_instance = get_logger()
-    logger_instance.debug(f"Split into {len(all_chunks)} semantic chunks.")
 
+    all_chunks = []
+    for heading, content in sections:
+        clean_heading = heading.lstrip("#").strip() if heading else ""
+        all_chunks.extend(chunk_section(clean_heading, content))
+
+    logger_instance.debug(f"Split into {len(all_chunks)} semantic chunks.")
     return all_chunks
 
 
