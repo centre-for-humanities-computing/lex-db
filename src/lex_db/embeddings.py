@@ -15,7 +15,7 @@ logger = get_logger()
 class EmbeddingModel(str, Enum):
     """Supported embedding models."""
 
-    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large-instruct"
+    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large"
     OPENAI_ADA_002 = "text-embedding-ada-002"
     OPENAI_SMALL_003 = "text-embedding-3-small"
     OPENAI_LARGE_003 = "text-embedding-3-large"
