@@ -180,4 +180,4 @@ db/
 .notes/temp
 
 # Output folder
-output/
+output/.DS_Store

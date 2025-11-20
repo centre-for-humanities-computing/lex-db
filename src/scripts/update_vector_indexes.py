@@ -64,6 +64,7 @@ def main() -> None:
             ),  # Optional override field
             chunk_size=int(metadata["chunk_size"]),
             chunk_overlap=int(metadata["chunk_overlap"]),
+            chunking_strategy=metadata["chunking_strategy"],
             batch_size=args.batch_size,
         )
         logger.info("Vector index update complete!")
