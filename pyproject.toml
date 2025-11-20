@@ -22,6 +22,7 @@ dependencies = [
     "types-setuptools>=80.8.0.20250521",
     "types-pyyaml>=6.0.12.20250516",
     "tiktoken>=0.9.0",
+    "sentence-splitter>=1.4",
 ]
 
 [build-system]
