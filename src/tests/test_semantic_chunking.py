@@ -196,7 +196,9 @@ class TestChunkSection:
         assert all(isinstance(chunk, str) for chunk in result)
 
     def test_chunk_section_empty_text(self) -> None:
-        result: list[str] = chunk_section("Heading", "", min_chunk_size=5, chunk_size=100)
+        result: list[str] = chunk_section(
+            "Heading", "", min_chunk_size=5, chunk_size=100
+        )
         assert result == []
 
     def test_chunk_section_too_short(self) -> None:
@@ -240,7 +242,9 @@ class TestSplitTextBySemanticChunks:
         )
         assert len(result) > 0
         # All chunks should be non-empty strings
-        assert all(isinstance(chunk, str) and len(chunk.strip()) > 0 for chunk in result)
+        assert all(
+            isinstance(chunk, str) and len(chunk.strip()) > 0 for chunk in result
+        )
 
     def test_semantic_chunks_removes_metadata(self) -> None:
         result: list[str] = split_text_by_semantic_chunks(SAMPLE_MARKDOWN_WITH_FOOTER)
