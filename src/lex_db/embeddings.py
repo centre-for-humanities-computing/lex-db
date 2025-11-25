@@ -23,7 +23,8 @@ logger = get_logger()
 class EmbeddingModel(str, Enum):
     """Supported embedding models."""
 
-    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large"
+    LOCAL_MULTILINGUAL_E5_SMALL = "intfloat/multilingual-e5-small"
+    LOCAL_MULTILINGUAL_E5_LARGE = "intfloat/multilingual-e5-large"
     OPENAI_ADA_002 = "text-embedding-ada-002"
     OPENAI_SMALL_003 = "text-embedding-3-small"
     OPENAI_LARGE_003 = "text-embedding-3-large"
@@ -32,7 +33,9 @@ class EmbeddingModel(str, Enum):
 
 def get_embedding_dimensions(model_choice: EmbeddingModel) -> int:
     """Get the dimension of embeddings for a given model."""
-    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+    if model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
+        return 384
+    elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE:
         return 1024
     elif model_choice == EmbeddingModel.OPENAI_ADA_002:
         return 1536
@@ -126,8 +129,8 @@ def get_onnx_cache_dir() -> Path:
 def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
     """Get a cached ONNX embedding model instance."""
     if model_choice not in _model_cache:
-        if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-            model_name = EmbeddingModel.LOCAL_E5_MULTILINGUAL.value
+        if model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
+            model_name = model_choice.value
 
             # Define cache directory for this specific model
             cache_dir = get_onnx_cache_dir()
@@ -324,7 +327,7 @@ def generate_embeddings(
             for _ in texts
         ]
 
-    elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+    elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
         model_data = get_local_embedding_model(model_choice)
         model = model_data["model"]
         tokenizer = model_data["tokenizer"]

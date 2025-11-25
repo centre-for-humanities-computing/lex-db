@@ -15,7 +15,7 @@ logger = get_logger()
 
 # List of existing vector indexes to add metadata for
 INDEXES = [
-    {"name": "e5_index", "embedding_model": EmbeddingModel.LOCAL_E5_MULTILINGUAL.value},
+    {"name": "e5_index", "embedding_model": EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE.value},
     {"name": "mock_index", "embedding_model": EmbeddingModel.MOCK_MODEL.value},
     {"name": "ada_002", "embedding_model": EmbeddingModel.OPENAI_ADA_002.value},
     {"name": "small_003", "embedding_model": EmbeddingModel.OPENAI_SMALL_003.value},

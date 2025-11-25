@@ -182,7 +182,7 @@ async def get_vector_index(index_name: str) -> dict:
 
 
 class BenchmarkEmbeddingsRequest(BaseModel):
-    model_choice: EmbeddingModel = EmbeddingModel.LOCAL_E5_MULTILINGUAL
+    model_choice: EmbeddingModel = EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
     num_texts: int = 50
     text_length: int = 200
 
