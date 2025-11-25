@@ -1,6 +1,12 @@
 """Embedding generation utilities for vector search in Lex DB."""
 
 from enum import Enum
+import os
+from optimum.onnxruntime import ORTModelForFeatureExtraction  # type: ignore
+import onnxruntime as ort  # type: ignore
+import torch
+from torch.nn.functional import normalize
+from transformers.models.auto.tokenization_auto import AutoTokenizer
 from typing import List, Optional, Tuple
 import numpy as np
 import time
@@ -8,6 +14,7 @@ from collections import deque
 from threading import Lock
 import tiktoken
 from lex_db.utils import get_logger
+from pathlib import Path
 
 logger = get_logger()
 
@@ -105,19 +112,73 @@ class OpenAIRateLimiter:
 _openai_rate_limiter = OpenAIRateLimiter()
 
 # Module-level cache for loaded models
-_model_cache: dict[EmbeddingModel, object] = {}
+_model_cache: dict[EmbeddingModel, dict] = {}
 
 
-def get_local_embedding_model(model_choice: EmbeddingModel) -> object:
-    """Get a cached embedding model instance."""
+def get_onnx_cache_dir() -> Path:
+    """Get the directory for caching ONNX models."""
+    cache_dir = Path.home() / ".cache" / "lex-db" / "onnx-models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
+    """Get a cached ONNX embedding model instance."""
     if model_choice not in _model_cache:
         if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-            from sentence_transformers import SentenceTransformer
+            model_name = EmbeddingModel.LOCAL_E5_MULTILINGUAL.value
 
-            logger.info(f"Loading embedding model: {model_choice}")
-            _model_cache[model_choice] = SentenceTransformer(
-                EmbeddingModel.LOCAL_E5_MULTILINGUAL.value
+            # Define cache directory for this specific model
+            cache_dir = get_onnx_cache_dir()
+            model_cache_path = cache_dir / model_name.replace("/", "_")
+
+            logger.info(f"Loading ONNX model: {model_name}")
+
+            sess_options = ort.SessionOptions()
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
+            sess_options.intra_op_num_threads = 4
+            sess_options.inter_op_num_threads = 2
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+            # Check if ONNX model already exists on disk
+            if model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
+                logger.info(f"Loading ONNX model from cache: {model_cache_path}")
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_cache_path,
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
+            else:
+                logger.info(f"Exporting and saving ONNX model to: {model_cache_path}")
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_name,
+                    export=True,
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+                # Save the model and tokenizer to disk
+                model.save_pretrained(model_cache_path)
+                tokenizer.save_pretrained(model_cache_path)
+                logger.info(f"ONNX model saved to cache: {model_cache_path}")
+
+            _model_cache[model_choice] = {"model": model, "tokenizer": tokenizer}
+
+            logger.info("ONNX model loaded successfully")
         else:
             raise ValueError(f"Local model not supported: {model_choice}")
 
@@ -161,6 +222,14 @@ def create_optimal_request_batches(
     return batches
 
 
+def create_text_batches(texts: List[str], batch_size: int = 32) -> List[List[str]]:
+    """Create batches of texts for parallel processing."""
+    batches = []
+    for i in range(0, len(texts), batch_size):
+        batches.append(texts[i : i + batch_size])
+    return batches
+
+
 def generate_embeddings(
     texts: list[str], model_choice: EmbeddingModel
 ) -> list[list[float]]:
@@ -176,24 +245,38 @@ def generate_embeddings(
         ]
 
     elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
+        model_data = get_local_embedding_model(model_choice)
+        model = model_data["model"]
+        tokenizer = model_data["tokenizer"]
+
         formatted_texts = [f"passage: {text}" for text in texts]
 
-        logger.debug(
-            f"Generating embeddings for {len(texts)} texts using E5 Multilingual model"
+        encoded = tokenizer(
+            formatted_texts,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
         )
-        # Use getattr to safely access encode method
-        encode_method = getattr(model, "encode", None)
-        if encode_method is None:
-            raise ValueError(f"No encode method for local model: {model_choice}")
 
-        embeddings = encode_method(formatted_texts, normalize_embeddings=True)
+        with torch.no_grad():
+            outputs = model(**encoded)
 
-        if hasattr(embeddings, "tolist"):
-            embeddings_list = embeddings.tolist()
-            return [list(map(float, emb)) for emb in embeddings_list]
+            token_embeddings = outputs.last_hidden_state
+            attention_mask = encoded["attention_mask"]
 
-        return [list(map(float, emb)) for emb in embeddings]
+            input_mask_expanded = (
+                attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+            )
+
+            sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+            sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+            embeddings = sum_embeddings / sum_mask
+
+            embeddings = normalize(embeddings, p=2, dim=1)
+
+        result: list[list[float]] = embeddings.cpu().numpy().tolist()
+        return result
 
     elif model_choice in [
         EmbeddingModel.OPENAI_ADA_002,
@@ -202,7 +285,6 @@ def generate_embeddings(
     ]:
         try:
             from openai import OpenAI
-            import os
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             api_key = os.environ.get("OPENAI_API_KEY")
@@ -240,12 +322,12 @@ def generate_embeddings(
                     for i, batch in enumerate(batches)
                 ]
                 for future in as_completed(futures):
-                    batch_idx, result = future.result()
+                    batch_idx, result = future.result()  # type: ignore
                     if result is not None:
                         all_results[batch_idx] = result
             # Flatten results in correct order
             all_embeddings = []
-            for result in all_results:
+            for result in all_results:  # type: ignore
                 if result is not None:
                     all_embeddings.extend(result)
 

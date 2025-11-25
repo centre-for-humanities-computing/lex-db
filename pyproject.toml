@@ -23,6 +23,7 @@ dependencies = [
     "types-pyyaml>=6.0.12.20250516",
     "tiktoken>=0.9.0",
     "sentence-splitter>=1.4",
+    "optimum[onnxruntime]>=2.0.0",
 ]
 
 [build-system]

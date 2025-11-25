@@ -188,3 +188,5 @@ output/.DS_Store
 
 # Database files
 *.db
+
+tmp
