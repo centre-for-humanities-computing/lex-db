@@ -206,7 +206,7 @@ components:
       properties:
         model_choice:
           $ref: '#/components/schemas/EmbeddingModel'
-          default: intfloat/multilingual-e5-large
+          default: intfloat/multilingual-e5-small
         num_texts:
           type: integer
           title: Num Texts
@@ -249,6 +249,7 @@ components:
     EmbeddingModel:
       type: string
       enum:
+      - intfloat/multilingual-e5-small
       - intfloat/multilingual-e5-large
       - text-embedding-ada-002
       - text-embedding-3-small
