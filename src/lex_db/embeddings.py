@@ -314,7 +314,7 @@ def create_text_batches(texts: List[str], batch_size: int = 32) -> List[List[str
 
 
 def generate_embeddings(
-    texts: list[str], model_choice: EmbeddingModel
+    texts: list[str], model_choice: EmbeddingModel, query: bool = False
 ) -> list[list[float]]:
     """Generate embeddings for a list of texts using the specified model."""
     if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
@@ -338,7 +338,10 @@ def generate_embeddings(
         
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i : i + batch_size]
-            formatted_texts = [f"passage: {text}" for text in batch_texts]
+            if query:
+                formatted_texts = [f"query: {text}" for text in batch_texts]
+            else:
+                formatted_texts = [f"passage: {text}" for text in batch_texts]
 
             encoded = tokenizer(
                 formatted_texts,
@@ -443,4 +446,4 @@ def generate_query_embedding(
     query_text: str, model_choice: EmbeddingModel
 ) -> list[float]:
     """Generate embedding for a search query."""
-    return generate_embeddings([query_text], model_choice)[0]
+    return generate_embeddings([query_text], model_choice, query=True)[0]
