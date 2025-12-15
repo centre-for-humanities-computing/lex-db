@@ -1,6 +1,5 @@
 """Configuration settings for Lex DB."""
 
-from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,7 +12,6 @@ class Settings(BaseSettings):
     """Application settings."""
 
     # Database settings
-    DATABASE_URL: Path = Path("db/lex.db")
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_NAME: str = "lex_db"
@@ -35,10 +33,9 @@ class Settings(BaseSettings):
     )
 
     @property
-    def DATABASE_URI(self) -> str:
-        """Construct the database URI."""
+    def DATABASE_URL(self) -> str:
+        """Construct the database URL."""
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-
 
 def get_settings() -> Settings:
     """Get application settings."""
