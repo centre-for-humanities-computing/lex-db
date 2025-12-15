@@ -172,14 +172,6 @@ def search_lex_fts(
     """
     Perform full-text search on lex entries using PostgreSQL native FTS.
 
-    Uses PostgreSQL's tsvector and tsquery with Danish language support.
-    The xhtml_md_tsv column is a generated column that automatically indexes
-    the xhtml_md content for full-text search.
-
-    Uses plainto_tsquery which is optimized for natural language queries
-    (questions, sentences) commonly used in RAG systems. It automatically
-    filters stop words and treats all terms as AND.
-
     Args:
         query: Search query string (natural language, questions, or keywords)
         ids: Optional list of article IDs to restrict search to
