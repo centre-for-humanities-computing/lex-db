@@ -129,13 +129,18 @@ def get_onnx_cache_dir() -> Path:
 def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
     """Get a cached ONNX embedding model instance."""
     if model_choice not in _model_cache:
-        if model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
+        if (
+            model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
+            or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+        ):
             model_name = model_choice.value
 
             # Define cache directory for this specific model
             cache_dir = get_onnx_cache_dir()
             model_cache_path = cache_dir / model_name.replace("/", "_")
-            quantized_model_path = cache_dir / f"{model_name.replace('/', '_')}_quantized"
+            quantized_model_path = (
+                cache_dir / f"{model_name.replace('/', '_')}_quantized"
+            )
 
             logger.info(f"Loading ONNX model: {model_name}")
 
@@ -146,16 +151,23 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
             # Optimize for 4-core CPU
             sess_options.intra_op_num_threads = 4  # Use all cores for operations
             sess_options.inter_op_num_threads = 4  # Parallel execution across ops
-            sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL  # Enable parallel execution
-            
+            sess_options.execution_mode = (
+                ort.ExecutionMode.ORT_PARALLEL
+            )  # Enable parallel execution
+
             # Enable additional optimizations
             sess_options.enable_cpu_mem_arena = True
             sess_options.enable_mem_pattern = True
             sess_options.enable_mem_reuse = True
 
             # Check if quantized model exists
-            if quantized_model_path.exists() and (quantized_model_path / "model_quantized.onnx").exists():
-                logger.info(f"Loading quantized ONNX model from cache: {quantized_model_path}")
+            if (
+                quantized_model_path.exists()
+                and (quantized_model_path / "model_quantized.onnx").exists()
+            ):
+                logger.info(
+                    f"Loading quantized ONNX model from cache: {quantized_model_path}"
+                )
                 model = ORTModelForFeatureExtraction.from_pretrained(
                     quantized_model_path,
                     file_name="model_quantized.onnx",
@@ -169,10 +181,12 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
                 )
                 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # Check if regular ONNX model exists
-            elif model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
+            elif (
+                model_cache_path.exists() and (model_cache_path / "model.onnx").exists()
+            ):
                 logger.info(f"Loading ONNX model from cache: {model_cache_path}")
                 logger.info("Quantizing model to INT8 for faster inference...")
-                
+
                 # Load the model first
                 model = ORTModelForFeatureExtraction.from_pretrained(
                     model_cache_path,
@@ -185,11 +199,13 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
                     },
                 )
                 tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
-                
+
                 # Quantize the model
                 quantizer = ORTQuantizer.from_pretrained(model)
-                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
-                
+                qconfig = AutoQuantizationConfig.avx512_vnni(
+                    is_static=False, per_channel=False
+                )
+
                 # Save quantized model
                 quantized_model_path.mkdir(parents=True, exist_ok=True)
                 quantizer.quantize(
@@ -198,7 +214,7 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
                     file_suffix="quantized",
                 )
                 tokenizer.save_pretrained(quantized_model_path)
-                
+
                 # Reload the quantized model
                 model = ORTModelForFeatureExtraction.from_pretrained(
                     quantized_model_path,
@@ -231,12 +247,14 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
                 model.save_pretrained(model_cache_path)
                 tokenizer.save_pretrained(model_cache_path)
                 logger.info(f"ONNX model saved to cache: {model_cache_path}")
-                
+
                 # Quantize the newly exported model
                 logger.info("Quantizing model to INT8 for faster inference...")
                 quantizer = ORTQuantizer.from_pretrained(model)
-                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
-                
+                qconfig = AutoQuantizationConfig.avx512_vnni(
+                    is_static=False, per_channel=False
+                )
+
                 quantized_model_path.mkdir(parents=True, exist_ok=True)
                 quantizer.quantize(
                     save_dir=quantized_model_path,
@@ -244,7 +262,7 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
                     file_suffix="quantized",
                 )
                 tokenizer.save_pretrained(quantized_model_path)
-                
+
                 # Reload the quantized model
                 model = ORTModelForFeatureExtraction.from_pretrained(
                     quantized_model_path,
@@ -327,7 +345,10 @@ def generate_embeddings(
             for _ in texts
         ]
 
-    elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
+    elif (
+        model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
+        or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+    ):
         model_data = get_local_embedding_model(model_choice)
         model = model_data["model"]
         tokenizer = model_data["tokenizer"]
@@ -335,7 +356,7 @@ def generate_embeddings(
         # Process in batches for better performance
         batch_size = 16  # Adjust based on memory constraints
         all_embeddings = []
-        
+
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i : i + batch_size]
             if query:
@@ -371,9 +392,11 @@ def generate_embeddings(
 
             batch_result: list[list[float]] = embeddings.cpu().numpy().tolist()
             all_embeddings.extend(batch_result)
-            
+
             if len(texts) > batch_size:
-                logger.debug(f"Processed batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
+                logger.debug(
+                    f"Processed batch {i // batch_size + 1}/{(len(texts) - 1) // batch_size + 1}"
+                )
 
         return all_embeddings
 
