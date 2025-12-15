@@ -66,27 +66,23 @@ echo "  This may take a few minutes depending on database size."
 echo "  Using configuration from: db/migrate_articles.load"
 echo ""
 
-# Update the .load file with actual connection strings using sed
-TEMP_CONFIG=$(mktemp /tmp/pgloader_config.XXXXXX.load)
-cp db/migrate_articles.load "$TEMP_CONFIG"
-
-# Replace placeholder paths with actual values
-sed -i "s|FROM sqlite://.*|FROM sqlite://${SQLITE_DB}|" "$TEMP_CONFIG"
-sed -i "s|INTO postgresql://.*|INTO ${PG_CONN}|" "$TEMP_CONFIG"
+# Export environment variables for pgloader's Mustache templating
+export SQLITE_DB
+export PG_HOST
+export PG_PORT
+export PG_DB
+export PG_USER
+export PG_PASSWORD
 
 # Run pgloader with increased memory limit
 # --dynamic-space-size sets the heap size in MB (default is 1024MB)
 # For 161k articles, we'll use 2GB
-if pgloader --dynamic-space-size 2048 "$TEMP_CONFIG"; then
+if pgloader --dynamic-space-size 2048 db/migrate_articles.load; then
     echo -e "${GREEN}✓ pgloader completed successfully${NC}"
 else
     echo -e "${RED}✗ pgloader failed${NC}"
-    rm "$TEMP_CONFIG"
     exit 1
 fi
-
-# Clean up temporary config
-rm "$TEMP_CONFIG"
 echo ""
 
 # Step 2: Add FTS column and index

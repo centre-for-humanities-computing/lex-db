@@ -6,17 +6,30 @@
  * - Excludes all FTS virtual tables and vector indexes
  * - Converts SQLite types to appropriate PostgreSQL types
  * - Handles the changed_at timestamp column conversion
+ * - Uses Mustache templating for environment variable substitution
+ * 
+ * Required environment variables:
+ *   SQLITE_DB    - Path to SQLite database file
+ *   PG_HOST      - PostgreSQL host
+ *   PG_PORT      - PostgreSQL port
+ *   PG_DB        - PostgreSQL database name
+ *   PG_USER      - PostgreSQL username
+ *   PG_PASSWORD  - PostgreSQL password
  * 
  * Usage:
+ *   export SQLITE_DB=/path/to/db.db
+ *   export PG_HOST=localhost PG_PORT=5432 PG_DB=lex_db
+ *   export PG_USER=lex_user PG_PASSWORD=changeme
  *   pgloader db/migrate_articles.load
  * 
- * Or with environment variables:
- *   SQLITE_DB=/path/to/db.db PG_CONN=postgresql://user:pass@host/db pgloader db/migrate_articles.load
+ * Or in one line:
+ *   SQLITE_DB=/path/to/db.db PG_HOST=localhost PG_PORT=5432 PG_DB=lex_db \
+ *   PG_USER=lex_user PG_PASSWORD=changeme pgloader db/migrate_articles.load
  */
 
 LOAD DATABASE
-     FROM sqlite:///home/au338890/repos/lex-db/db/lex_1.5.0.db
-     INTO postgresql://lex_user:changeme@localhost/lex_db
+     FROM '{{SQLITE_DB}}'
+     INTO postgresql://{{PG_USER}}:{{PG_PASSWORD}}@{{PG_HOST}}:{{PG_PORT}}/{{PG_DB}}'
 
 WITH include drop, create tables, create indexes, reset sequences,
      prefetch rows = 1000,
