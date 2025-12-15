@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, Optional, Any, cast
 
 from lex_db.config import get_settings
 from lex_db.utils import get_logger
@@ -129,30 +129,31 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
         return SearchResults(entries=[], total=0, limit=limit)
 
     with get_db_connection() as conn:
-        placeholders = ",".join("%s" for _ in ids)
-        
-        total, = conn.execute(
-            f"SELECT COUNT(*) FROM articles WHERE id IN ({placeholders})",
-            ids,
-        ).fetchone() or (0,)
+        # Use PostgreSQL's ANY() operator with array parameter
+        # More efficient than IN with multiple placeholders
+        count_result = conn.execute(
+            "SELECT COUNT(*) as count FROM articles WHERE id = ANY(%s)",
+            [ids],
+        ).fetchone()
+        total = count_result['count'] if count_result else 0  # type: ignore[index]
         
         rows = conn.execute(
-            f"""
+            """
             SELECT id, xhtml_md, 0.0 as rank, permalink, headword, encyclopedia_id
             FROM articles
-            WHERE id IN ({placeholders})
+            WHERE id = ANY(%s)
             LIMIT %s
             """,
-            (*ids, limit),
-        ).fetchall()
+            [ids, limit],
+        ).fetchall()  # type: ignore[misc]
         
         entries = [
             SearchResult(
-                id=row[0],
-                xhtml_md=row[1],
-                rank=row[2],
-                url=get_url_base(int(row[5])) + row[3],
-                title=row[4],
+                id=row['id'], # type: ignore[index]
+                xhtml_md=row['xhtml_md'], # type: ignore[index]
+                rank=row['rank'], # type: ignore[index]
+                url=get_url_base(int(row['encyclopedia_id'])) + row['permalink'], # type: ignore[index]
+                title=row['headword'], # type: ignore[index]
             )
             for row in rows
         ]
@@ -167,12 +168,78 @@ def search_lex_fts(
     query: str, ids: Optional[list[int]] = None, limit: int = 50
 ) -> SearchResults:
     """
-    Perform full-text search on lex entries.
+    Perform full-text search on lex entries using PostgreSQL native FTS.
     
-    NOTE: Full-text search migration to PostgreSQL is handled in Sub-Issue 4.
-    This function is temporarily disabled.
+    Uses PostgreSQL's tsvector and tsquery with Danish language support.
+    The xhtml_md_tsv column is a generated column that automatically indexes
+    the xhtml_md content for full-text search.
+    
+    Uses plainto_tsquery which is optimized for natural language queries
+    (questions, sentences) commonly used in RAG systems. It automatically
+    filters stop words and treats all terms as AND.
+    
+    Args:
+        query: Search query string (natural language, questions, or keywords)
+        ids: Optional list of article IDs to restrict search to
+        limit: Maximum number of results to return
+        
+    Returns:
+        SearchResults with ranked entries
     """
-    raise NotImplementedError(
-        "Full-text search is not yet implemented for PostgreSQL. "
-        "This will be migrated in Sub-Issue 4 of the PostgreSQL migration."
-    )
+    # Handle empty query
+    if not query or not query.strip():
+        if ids:
+            return get_articles_by_ids(ids, limit=limit)
+        return SearchResults(entries=[], total=0, limit=limit)
+    
+    with get_db_connection() as conn:
+        # Build the WHERE clause
+        # Use plainto_tsquery for natural language queries (better for RAG)
+        # Automatically filters stop words and handles conversational queries
+        where_clause = "xhtml_md_tsv @@ plainto_tsquery('danish', %s)"
+        params: list = [query]
+        
+        # Add ID filter if provided
+        if ids:
+            where_clause += " AND a.id = ANY(%s)"
+            params.append(ids)
+        
+        # Count total matching results
+        count_result = conn.execute(
+            f"SELECT COUNT(*) as count FROM articles a WHERE {where_clause}",
+            params
+        ).fetchone()
+        total = count_result['count'] if count_result else 0  # type: ignore[index]
+        
+        # Get ranked results
+        # ts_rank() scores results by relevance (higher = more relevant)
+        rows = conn.execute(
+            f"""
+            SELECT 
+                a.id,
+                a.xhtml_md,
+                ts_rank(a.xhtml_md_tsv, plainto_tsquery('danish', %s)) as rank,
+                a.permalink,
+                a.headword,
+                a.encyclopedia_id
+            FROM articles a
+            WHERE {where_clause}
+            ORDER BY rank DESC
+            LIMIT %s
+            """,
+            [query] + params + [limit]
+        ).fetchall()  # type: ignore[misc]
+        
+        # Format results
+        entries = [
+            SearchResult(
+                id=row['id'], # type: ignore[index]
+                xhtml_md=row['xhtml_md'], # type: ignore[index]
+                rank=float(row['rank']), # type: ignore[index]
+                url=get_url_base(int(row['encyclopedia_id'])) + row['permalink'], # type: ignore[index]
+                title=row['headword'], # type: ignore[index]
+            )
+            for row in rows
+        ]
+        
+        return SearchResults(entries=entries, total=total, limit=limit)

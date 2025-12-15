@@ -1,0 +1,52 @@
+/*
+ * pgloader configuration for migrating articles table from SQLite to PostgreSQL
+ * 
+ * This configuration:
+ * - Migrates ONLY the articles table from SQLite
+ * - Excludes all FTS virtual tables and vector indexes
+ * - Converts SQLite types to appropriate PostgreSQL types
+ * - Handles the changed_at timestamp column conversion
+ * 
+ * Usage:
+ *   pgloader db/migrate_articles.load
+ * 
+ * Or with environment variables:
+ *   SQLITE_DB=/path/to/db.db PG_CONN=postgresql://user:pass@host/db pgloader db/migrate_articles.load
+ */
+
+LOAD DATABASE
+     FROM sqlite:///home/au338890/repos/lex-db/db/lex_1.5.0.db
+     INTO postgresql://lex_user:changeme@localhost/lex_db
+
+WITH include drop, create tables, create indexes, reset sequences,
+     prefetch rows = 1000,
+     batch rows = 1000,
+     batch size = 10 MB,
+     workers = 2,
+     concurrency = 1
+
+-- Only migrate the articles table (pgloader uses LIKE for pattern matching)
+INCLUDING ONLY TABLE NAMES LIKE 'articles'
+
+-- Type casting rules for articles table columns
+CAST 
+    -- Convert SQLite TEXT timestamp to PostgreSQL TIMESTAMP WITH TIME ZONE
+    -- The changed_at column stores timestamps in format: 'YYYY-MM-DD HH:MM:SS.ffffff'
+    column articles.changed_at to "timestamp with time zone"
+        drop default drop not null using zero-dates-to-null,
+    
+    -- Ensure integer columns are properly typed (drop SQLite's flexible typing)
+    column articles.id to integer drop typemod,
+    column articles.encyclopedia_id to integer drop typemod,
+    
+    -- Text columns remain as TEXT (PostgreSQL's variable-length text type)
+    column articles.headword to text drop typemod,
+    column articles.xhtml_md to text drop typemod,
+    column articles.permalink to text drop typemod
+
+-- Drop existing articles table before migration (clean slate)
+BEFORE LOAD DO
+    $$ DROP TABLE IF EXISTS articles CASCADE; $$;
+
+-- After migration, we'll add the FTS column separately
+-- This is done in the run_migration.sh script
