@@ -15,6 +15,7 @@ logger = get_logger()
 # Global connection pool
 _connection_pool: ConnectionPool | None = None
 
+
 def get_connection_pool() -> ConnectionPool:
     """Get or create connection pool."""
     global _connection_pool
