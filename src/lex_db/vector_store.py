@@ -1,8 +1,9 @@
 """Vector store operations for Lex DB."""
 
 import json
-import sqlite3
 from datetime import datetime
+from psycopg import Connection
+from typing import Any
 
 from pydantic import BaseModel
 from lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
@@ -12,13 +13,12 @@ from lex_db.embeddings import (
     get_embedding_dimensions,
     generate_query_embedding,
 )
-from typing import Any
 
 logger = get_logger()
 
 
 def create_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     embedding_model_choice: EmbeddingModel,
     source_table: str,
@@ -104,7 +104,7 @@ def create_vector_index(
 
 
 def add_single_article_to_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     article_rowid: str,
     article_text: str,
@@ -160,7 +160,7 @@ def add_single_article_to_vector_index(
 
 
 def add_chunks_to_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     chunks_data: list[
         tuple[str, str, str]
@@ -213,7 +213,7 @@ def add_chunks_to_vector_index(
 
 
 def add_precomputed_embeddings_to_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     source_table: str,
     text_column: str,
@@ -336,7 +336,7 @@ def add_precomputed_embeddings_to_vector_index(
 
 
 def remove_article_from_vector_index(
-    db_conn: sqlite3.Connection, vector_index_name: str, article_rowid: str
+    db_conn: Connection[Any], vector_index_name: str, article_rowid: str
 ) -> int:
     """Remove an article from a vector index."""
     raise NotImplementedError(
@@ -375,7 +375,7 @@ class VectorSearchResults(BaseModel):
 
 
 def search_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     query_text: str,
     embedding_model: EmbeddingModel,
@@ -428,7 +428,7 @@ def search_vector_index(
 
 
 def validate_tables_exist(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     table_names: list[str],
 ) -> None:
     raise NotImplementedError(
@@ -445,7 +445,7 @@ def validate_tables_exist(
 
 
 def update_vector_index(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     vector_index_name: str,
     source_table: str,
     text_column: str,
@@ -575,7 +575,7 @@ def update_vector_index(
     return stats
 
 
-def create_vector_index_metadata_table(db_conn: sqlite3.Connection) -> None:
+def create_vector_index_metadata_table(db_conn: Connection[Any]) -> None:
     """Create the metadata table for vector indexes if it does not exist."""
     cursor = db_conn.cursor()
     cursor.execute(
@@ -598,7 +598,7 @@ def create_vector_index_metadata_table(db_conn: sqlite3.Connection) -> None:
 
 
 def insert_vector_index_metadata(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     index_name: str,
     source_table: str,
     source_column: str,
@@ -635,7 +635,7 @@ def insert_vector_index_metadata(
 
 
 def update_vector_index_metadata(
-    db_conn: sqlite3.Connection,
+    db_conn: Connection[Any],
     index_name: str,
     **kwargs: Any,
 ) -> None:
@@ -655,26 +655,21 @@ def update_vector_index_metadata(
     db_conn.commit()
 
 
-def get_all_vector_index_metadata(db_conn: sqlite3.Connection) -> list[dict]:
+def get_all_vector_index_metadata(db_conn: Connection[Any]) -> list[dict]:
     """Retrieve metadata for all vector indexes."""
     create_vector_index_metadata_table(db_conn)
-    cursor = db_conn.cursor()
-    cursor.execute("SELECT * FROM vector_index_metadata")
-    columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    rows = db_conn.execute("SELECT * FROM vector_index_metadata").fetchall()
+    # rows are already dicts due to dict_row factory
+    return [dict(row) for row in rows]  # type: ignore[call-overload]
 
 
-def get_vector_index_metadata(
-    db_conn: sqlite3.Connection, index_name: str
-) -> dict | None:
+def get_vector_index_metadata(db_conn: Connection[Any], index_name: str) -> dict | None:
     """Retrieve metadata for a specific vector index."""
     create_vector_index_metadata_table(db_conn)
-    cursor = db_conn.cursor()
-    cursor.execute(
-        "SELECT * FROM vector_index_metadata WHERE index_name = ?", (index_name,)
-    )
-    row = cursor.fetchone()
+    row = db_conn.execute(
+        "SELECT * FROM vector_index_metadata WHERE index_name = %s", (index_name,)
+    ).fetchone()
     if row:
-        columns = [desc[0] for desc in cursor.description]
-        return dict(zip(columns, row))
+        # row is already a dict due to dict_row factory
+        return dict(row)  # type: ignore[call-overload]
     return None
