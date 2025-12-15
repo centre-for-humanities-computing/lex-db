@@ -30,6 +30,10 @@ def create_vector_index(
     chunking_strategy: ChunkingStrategy = ChunkingStrategy.TOKENS,
 ) -> None:
     """Create a new vector index structure and store its metadata."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     cursor = db_conn.cursor()
     embedding_dim = get_embedding_dimensions(embedding_model_choice)
     if force:
@@ -110,6 +114,10 @@ def add_single_article_to_vector_index(
     chunking_strategy: ChunkingStrategy = ChunkingStrategy.SECTIONS,
 ) -> None:
     """Add a single article to an existing vector index."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     if not article_text:
         return
 
@@ -163,6 +171,10 @@ def add_chunks_to_vector_index(
     embedding_model_choice: EmbeddingModel,
 ) -> None:
     """Add multiple chunks to an existing vector index."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
 
     cursor = db_conn.cursor()
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -222,6 +234,10 @@ def add_precomputed_embeddings_to_vector_index(
     This function is useful when you have embeddings from external sources
     (like OpenAI batch API) and need to reconstruct the chunk text from the source.
     """
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     cursor = db_conn.cursor()
     stats = {"created": 0, "skipped": 0, "errors": 0}
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -326,6 +342,10 @@ def remove_article_from_vector_index(
     db_conn: sqlite3.Connection, vector_index_name: str, article_rowid: str
 ) -> int:
     """Remove an article from a vector index."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     cursor = db_conn.cursor()
     select_sql = (
         f"SELECT COUNT(*) FROM {vector_index_name} WHERE source_article_id = ?;"
@@ -363,8 +383,13 @@ def search_vector_index(
     queries: list[tuple[str, TextType]],
     embedding_model: EmbeddingModel,
     top_k: int = 5,
-) -> list[VectorSearchResults]:
-    """Batch search a vector index for similar content to the query texts."""
+) -> VectorSearchResults:
+    """Search a vector index for similar content to the query text."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
+    from lex_db.embeddings import EmbeddingModel
 
     cursor = db_conn.cursor()
 
@@ -411,6 +436,10 @@ def validate_tables_exist(
     db_conn: sqlite3.Connection,
     table_names: list[str],
 ) -> None:
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     cursor = db_conn.cursor()
     for table in table_names:
         cursor.execute(
@@ -433,6 +462,10 @@ def update_vector_index(
     batch_size: int = 64,
 ) -> dict[str, int]:
     """Update a vector index with new, modified, or deleted content."""
+    raise NotImplementedError(
+        "Vector index operations are not yet implemented for PostgreSQL. "
+        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
+    )
     cursor = db_conn.cursor()
     stats = {"created": 0, "deleted": 0, "errors": 0}
 
