@@ -1,0 +1,65 @@
+/*
+ * pgloader configuration for migrating articles table from SQLite to PostgreSQL
+ * 
+ * This configuration:
+ * - Migrates ONLY the articles table from SQLite
+ * - Excludes all FTS virtual tables and vector indexes
+ * - Converts SQLite types to appropriate PostgreSQL types
+ * - Handles the changed_at timestamp column conversion
+ * - Uses Mustache templating for environment variable substitution
+ * 
+ * Required environment variables:
+ *   SQLITE_DB    - Path to SQLite database file
+ *   PG_HOST      - PostgreSQL host
+ *   PG_PORT      - PostgreSQL port
+ *   PG_DB        - PostgreSQL database name
+ *   PG_USER      - PostgreSQL username
+ *   PG_PASSWORD  - PostgreSQL password
+ * 
+ * Usage:
+ *   export SQLITE_DB=/path/to/db.db
+ *   export PG_HOST=localhost PG_PORT=5432 PG_DB=lex_db
+ *   export PG_USER=lex_user PG_PASSWORD=changeme
+ *   pgloader db/migrate_articles.load
+ * 
+ * Or in one line:
+ *   SQLITE_DB=/path/to/db.db PG_HOST=localhost PG_PORT=5432 PG_DB=lex_db \
+ *   PG_USER=lex_user PG_PASSWORD=changeme pgloader db/migrate_articles.load
+ */
+
+LOAD DATABASE
+     FROM '{{SQLITE_DB}}'
+     INTO postgresql://{{PG_USER}}:{{PG_PASSWORD}}@{{PG_HOST}}:{{PG_PORT}}/{{PG_DB}}'
+
+WITH include drop, create tables, create indexes, reset sequences,
+     prefetch rows = 1000,
+     batch rows = 1000,
+     batch size = 10 MB,
+     workers = 2,
+     concurrency = 1
+
+-- Only migrate the articles table (pgloader uses LIKE for pattern matching)
+INCLUDING ONLY TABLE NAMES LIKE 'articles'
+
+-- Type casting rules for articles table columns
+CAST 
+    -- Convert SQLite TEXT timestamp to PostgreSQL TIMESTAMP WITH TIME ZONE
+    -- The changed_at column stores timestamps in format: 'YYYY-MM-DD HH:MM:SS.ffffff'
+    column articles.changed_at to "timestamp with time zone"
+        drop default drop not null using zero-dates-to-null,
+    
+    -- Ensure integer columns are properly typed (drop SQLite's flexible typing)
+    column articles.id to integer drop typemod,
+    column articles.encyclopedia_id to integer drop typemod,
+    
+    -- Text columns remain as TEXT (PostgreSQL's variable-length text type)
+    column articles.headword to text drop typemod,
+    column articles.xhtml_md to text drop typemod,
+    column articles.permalink to text drop typemod
+
+-- Drop existing articles table before migration (clean slate)
+BEFORE LOAD DO
+    $$ DROP TABLE IF EXISTS articles CASCADE; $$;
+
+-- After migration, we'll add the FTS column separately
+-- This is done in the run_migration.sh script

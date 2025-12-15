@@ -1,12 +1,11 @@
 """Database connection and operations for Lex DB."""
 
-import re
-import psycopg
 from pydantic import BaseModel
+from psycopg import Connection
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Optional, Generator
 
 from lex_db.config import get_settings
 from lex_db.utils import get_logger
@@ -15,6 +14,7 @@ logger = get_logger()
 
 # Global connection pool
 _connection_pool: ConnectionPool | None = None
+
 
 def get_connection_pool() -> ConnectionPool:
     """Get or create connection pool."""
@@ -29,8 +29,9 @@ def get_connection_pool() -> ConnectionPool:
         )
     return _connection_pool
 
+
 @contextmanager
-def get_db_connection():
+def get_db_connection() -> Generator[Connection, None, None]:
     """Get a connection from the pool."""
     pool = get_connection_pool()
     with pool.connection() as conn:
@@ -42,13 +43,14 @@ def get_db_info() -> dict:
     with get_db_connection() as conn:
         # Get list of tables from PostgreSQL system catalog
         tables = [
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public';"
             ).fetchall()
         ]
-        
+
         # Get PostgreSQL version
-        pg_version, = conn.execute("SELECT version();").fetchone() or ("Unknown",)
+        (pg_version,) = conn.execute("SELECT version();").fetchone() or ("Unknown",)
 
         return {
             "tables": tables,
@@ -130,31 +132,31 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
         return SearchResults(entries=[], total=0, limit=limit)
 
     with get_db_connection() as conn:
-        placeholders = ",".join("%s" for _ in ids)
-        
-        total, = conn.execute(
-            f"SELECT COUNT(*) FROM articles WHERE id IN ({placeholders})",
-            ids,
-        ).fetchone() or (0,)
-        
+        # Use PostgreSQL's ANY() operator with array parameter
+        # More efficient than IN with multiple placeholders
+        count_result = conn.execute(
+            "SELECT COUNT(*) as count FROM articles WHERE id = ANY(%s)",
+            [ids],
+        ).fetchone()
+        total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
+
         rows = conn.execute(
-            f"""
+            """
             SELECT id, xhtml_md, 0.0 as rank, permalink, headword, encyclopedia_id
             FROM articles
-            WHERE id IN ({placeholders})
+            WHERE id = ANY(%s)
             LIMIT %s
             """,
-            (*ids, limit),
-        ).fetchall()
-        
+            [ids, limit],
+        ).fetchall()  # type: ignore[misc]
+
         entries = [
             SearchResult(
-                id=row[0],
-                xhtml_md=row[1],
-                rank=row[2],
-                url=get_url_base(int(row[5])) + row[3],
-                title=row[4],
-                headword=row[3],
+                id=row["id"],  # type: ignore[call-overload]
+                xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
+                rank=row["rank"],  # type: ignore[call-overload]
+                url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
+                title=row["headword"],  # type: ignore[call-overload]
             )
             for row in rows
         ]
@@ -180,12 +182,69 @@ def search_lex_fts(
     query: str, ids: Optional[list[int]] = None, limit: int = 50
 ) -> SearchResults:
     """
-    Perform full-text search on lex entries.
-    
-    NOTE: Full-text search migration to PostgreSQL is handled in Sub-Issue 4.
-    This function is temporarily disabled.
+    Perform full-text search on lex entries using PostgreSQL native FTS.
+
+    Args:
+        query: Search query string (natural language, questions, or keywords)
+        ids: Optional list of article IDs to restrict search to
+        limit: Maximum number of results to return
+
+    Returns:
+        SearchResults with ranked entries
     """
-    raise NotImplementedError(
-        "Full-text search is not yet implemented for PostgreSQL. "
-        "This will be migrated in Sub-Issue 4 of the PostgreSQL migration."
-    )
+    # Handle empty query
+    if not query or not query.strip():
+        if ids:
+            return get_articles_by_ids(ids, limit=limit)
+        return SearchResults(entries=[], total=0, limit=limit)
+
+    with get_db_connection() as conn:
+        # Build the WHERE clause
+        # Use plainto_tsquery for natural language queries (better for RAG)
+        # Automatically filters stop words and handles conversational queries
+        where_clause = "xhtml_md_tsv @@ plainto_tsquery('danish', %s)"
+        params: list = [query]
+
+        # Add ID filter if provided
+        if ids:
+            where_clause += " AND a.id = ANY(%s)"
+            params.append(ids)
+
+        # Count total matching results
+        count_result = conn.execute(
+            f"SELECT COUNT(*) as count FROM articles a WHERE {where_clause}", params
+        ).fetchone()
+        total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
+
+        # Get ranked results
+        # ts_rank() scores results by relevance (higher = more relevant)
+        rows = conn.execute(
+            f"""
+            SELECT 
+                a.id,
+                a.xhtml_md,
+                ts_rank(a.xhtml_md_tsv, plainto_tsquery('danish', %s)) as rank,
+                a.permalink,
+                a.headword,
+                a.encyclopedia_id
+            FROM articles a
+            WHERE {where_clause}
+            ORDER BY rank DESC
+            LIMIT %s
+            """,
+            [query] + params + [limit],
+        ).fetchall()  # type: ignore[misc]
+
+        # Format results
+        entries = [
+            SearchResult(
+                id=row["id"],  # type: ignore[call-overload]
+                xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
+                rank=float(row["rank"]),  # type: ignore[call-overload]
+                url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
+                title=row["headword"],  # type: ignore[call-overload]
+            )
+            for row in rows
+        ]
+
+        return SearchResults(entries=entries, total=total, limit=limit)
