@@ -74,13 +74,6 @@ cp db/migrate_articles.load "$TEMP_CONFIG"
 sed -i "s|FROM sqlite://.*|FROM sqlite://${SQLITE_DB}|" "$TEMP_CONFIG"
 sed -i "s|INTO postgresql://.*|INTO ${PG_CONN}|" "$TEMP_CONFIG"
 
-# Debug: Show what pgloader will use
-echo -e "${YELLOW}Debug: Generated pgloader config:${NC}"
-echo "---"
-head -n 50 "$TEMP_CONFIG"
-echo "---"
-echo ""
-
 # Run pgloader with increased memory limit
 # --dynamic-space-size sets the heap size in MB (default is 1024MB)
 # For 161k articles, we'll use 2GB
