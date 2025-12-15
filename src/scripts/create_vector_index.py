@@ -5,7 +5,7 @@ import argparse
 from lex_db.utils import get_logger, configure_logging, ChunkingStrategy
 from lex_db.embeddings import EmbeddingModel
 from lex_db.vector_store import create_vector_index
-from lex_db.database import create_connection
+from lex_db.database import get_db_connection
 from lex_db.config import get_settings
 
 logger = get_logger()
@@ -70,20 +70,19 @@ def main() -> None:
     settings = get_settings()
     try:
         logger.info(f"Connecting to database at {settings.DATABASE_URL}")
-        db_conn = create_connection()
-
-        create_vector_index(
-            db_conn=db_conn,
-            vector_index_name=args.index_name,
-            embedding_model_choice=EmbeddingModel(args.embedding_model),
-            force=args.force_drop,
-            source_table=args.source_table,
-            source_column=args.source_column,
-            updated_at_column=args.updated_column,
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
-            chunking_strategy=ChunkingStrategy(args.chunking_strategy),
-        )
+        with get_db_connection() as db_conn:
+            create_vector_index(
+                db_conn=db_conn,
+                vector_index_name=args.index_name,
+                embedding_model_choice=EmbeddingModel(args.embedding_model),
+                force=args.force_drop,
+                source_table=args.source_table,
+                source_column=args.source_column,
+                updated_at_column=args.updated_column,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+                chunking_strategy=ChunkingStrategy(args.chunking_strategy),
+            )
 
         logger.info(
             "Vector index structure created! Use update_vector_indexes.py to populate it."
@@ -91,9 +90,6 @@ def main() -> None:
 
     except Exception as e:
         logger.error(f"Error creating vector index structure: {str(e)}", exc_info=True)
-    finally:
-        if "db_conn" in locals():
-            db_conn.close()
 
 
 if __name__ == "__main__":

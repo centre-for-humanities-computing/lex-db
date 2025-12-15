@@ -19,10 +19,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize database connection pool on startup."""
     # Initialize connection pool at startup
     pool = get_connection_pool()
-    print(f"✓ Database connection pool initialized (min={settings.DB_POOL_MIN_SIZE}, max={settings.DB_POOL_MAX_SIZE})")
-    
+    print(
+        f"✓ Database connection pool initialized (min={settings.DB_POOL_MIN_SIZE}, max={settings.DB_POOL_MAX_SIZE})"
+    )
+
     yield
-    
+
     # Close connection pool on shutdown
     pool.close()
     print("✓ Database connection pool closed")
