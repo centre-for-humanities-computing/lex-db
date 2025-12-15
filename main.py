@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from lex_db.config import get_settings
-from lex_db.database import get_db_info, verify_db_exists
+from lex_db.database import get_db_info, get_connection_pool
 from lex_db.api.routes import router as api_router
 
 
@@ -16,15 +16,21 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Verify database connection on startup."""
-    if not verify_db_exists():
-        raise Exception(f"Database file not found at {settings.DATABASE_URL}")
+    """Initialize database connection pool on startup."""
+    # Initialize connection pool at startup
+    pool = get_connection_pool()
+    print(f"✓ Database connection pool initialized (min={settings.DB_POOL_MIN_SIZE}, max={settings.DB_POOL_MAX_SIZE})")
+    
     yield
+    
+    # Close connection pool on shutdown
+    pool.close()
+    print("✓ Database connection pool closed")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="A wrapper around a SQLite database for encyclopedia articles with vector and full-text search",
+    description="A PostgreSQL database API for encyclopedia articles with vector and full-text search",
     lifespan=lifespan,
     version="0.1.0",
     debug=settings.DEBUG,
