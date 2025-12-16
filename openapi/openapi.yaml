@@ -73,6 +73,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/hybrid-search/indexes/{index_name}/query:
+    post:
+      tags:
+      - lex-db
+      summary: Hybrid search combining semantic and keyword search with RRF fusion
+      description: Perform hybrid search using RRF fusion of semantic and keyword
+        search.
+      operationId: hybrid_search
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HybridSearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HybridSearchResults'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/hyde-search/indexes/{index_name}/query:
+    post:
+      tags:
+      - lex-db
+      summary: HyDE search using LLM-generated hypothetical document
+      description: 'Perform HyDE search: generate hypothetical document, embed it,
+        and search.'
+      operationId: hyde_search
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HyDESearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response Hyde Search
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/hybrid-hyde-search/indexes/{index_name}/query:
+    post:
+      tags:
+      - lex-db
+      summary: Adaptive hybrid search with HyDE + FTS and query-type based weighting
+      description: Perform adaptive hybrid search using HyDE + FTS with adaptive RRF
+        weighting.
+      operationId: hybrid_hyde_search
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HybridHyDESearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HybridHyDESearchResults'
+                title: Response Hybrid Hyde Search
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/articles:
     get:
       tags:
@@ -185,38 +294,134 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
-    SearchResult:
+    HyDESearchRequest:
       properties:
-        id:
+        query_text:
+          type: string
+          title: Query Text
+        top_k:
           type: integer
-          title: Id
-        xhtml_md:
-          type: string
-          title: Xhtml Md
-        rank:
-          type: number
-          title: Rank
-        url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Url
-        title:
-          type: string
-          title: Title
+          title: Top K
+          default: 10
       type: object
       required:
-      - id
-      - xhtml_md
+      - query_text
+      title: HyDESearchRequest
+      description: HyDE search request model.
+    HybridHyDESearchRequest:
+      properties:
+        query_text:
+          type: string
+          title: Query Text
+        top_k:
+          type: integer
+          title: Top K
+          default: 10
+        top_k_hyde:
+          type: integer
+          title: Top K Hyde
+          default: 50
+        top_k_fts:
+          type: integer
+          title: Top K Fts
+          default: 50
+        rrf_k:
+          type: integer
+          title: Rrf K
+          default: 60
+      type: object
+      required:
+      - query_text
+      title: HybridHyDESearchRequest
+      description: Adaptive hybrid search request model.
+    HybridHyDESearchResults:
+      properties:
+        rank:
+          type: integer
+          title: Rank
+        article_id:
+          type: integer
+          title: Article Id
+        article_headword:
+          type: string
+          title: Article Headword
+        chunk_sequence:
+          type: integer
+          title: Chunk Sequence
+        chunk_text:
+          type: string
+          title: Chunk Text
+        rrf_score:
+          type: number
+          title: Rrf Score
+        hyde_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Hyde Rank
+        fts_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Fts Rank
+        source:
+          type: string
+          title: Source
+      type: object
+      required:
       - rank
-      - title
-      title: SearchResult
-      description: Single result from a search.
+      - article_id
+      - article_headword
+      - chunk_sequence
+      - chunk_text
+      - rrf_score
+      - hyde_rank
+      - fts_rank
+      - source
+      title: HybridHyDESearchResults
+    HybridSearchRequest:
+      properties:
+        query_text:
+          type: string
+          title: Query Text
+        top_k:
+          type: integer
+          title: Top K
+          default: 10
+        top_k_semantic:
+          type: integer
+          title: Top K Semantic
+          default: 50
+        top_k_fts:
+          type: integer
+          title: Top K Fts
+          default: 50
+        rrf_k:
+          type: integer
+          title: Rrf K
+          default: 60
+      type: object
+      required:
+      - query_text
+      title: HybridSearchRequest
+      description: Hybrid search request model.
+    HybridSearchResults:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/lex_db__hybrid_search__SearchResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - results
+      title: HybridSearchResults
+      description: Results of a hybrid search.
     SearchResults:
       properties:
         entries:
           items:
-            $ref: '#/components/schemas/SearchResult'
+            $ref: '#/components/schemas/lex_db__database__SearchResult'
           type: array
           title: Entries
         total:
@@ -305,3 +510,75 @@ components:
       - results
       title: VectorSearchResults
       description: Result of a vector search.
+    lex_db__database__SearchResult:
+      properties:
+        id:
+          type: integer
+          title: Id
+        xhtml_md:
+          type: string
+          title: Xhtml Md
+        rank:
+          type: number
+          title: Rank
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        title:
+          type: string
+          title: Title
+      type: object
+      required:
+      - id
+      - xhtml_md
+      - rank
+      - title
+      title: SearchResult
+      description: Single result from a search.
+    lex_db__hybrid_search__SearchResult:
+      properties:
+        rank:
+          type: integer
+          title: Rank
+        article_id:
+          type: integer
+          title: Article Id
+        article_headword:
+          type: string
+          title: Article Headword
+        chunk_sequence:
+          type: integer
+          title: Chunk Sequence
+        chunk_text:
+          type: string
+          title: Chunk Text
+        rrf_score:
+          type: number
+          title: Rrf Score
+        semantic_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Semantic Rank
+        fts_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Fts Rank
+        source:
+          type: string
+          title: Source
+      type: object
+      required:
+      - rank
+      - article_id
+      - article_headword
+      - chunk_sequence
+      - chunk_text
+      - rrf_score
+      - semantic_rank
+      - fts_rank
+      - source
+      title: SearchResult

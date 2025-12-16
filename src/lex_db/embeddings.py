@@ -265,4 +265,31 @@ def generate_query_embedding(
     query_text: str, model_choice: EmbeddingModel
 ) -> list[float]:
     """Generate embedding for a search query."""
-    return generate_embeddings([query_text], model_choice)[0]
+    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
+        # E5 queries MUST use "query: " prefix to match document space
+        formatted_query = f"query: {query_text}"
+        embedding = model.encode(formatted_query, normalize_embeddings=True)  # type: ignore[attr-defined]
+        if hasattr(embedding, "tolist"):
+            return embedding.tolist()  # type: ignore[no-any-return]
+        return list(map(float, embedding))
+
+    result = generate_embeddings([query_text], model_choice)[0]
+    return list(map(float, result))
+
+
+def generate_passage_embedding(
+    passage_text: str, model_choice: EmbeddingModel
+) -> list[float]:
+    """Generate embedding for a passage/document (used for HyDE)."""
+    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
+        # E5 passages MUST use "passage: " prefix
+        formatted_passage = f"passage: {passage_text}"
+        embedding = model.encode(formatted_passage, normalize_embeddings=True)  # type: ignore[attr-defined]
+        if hasattr(embedding, "tolist"):
+            return embedding.tolist()  # type: ignore[no-any-return]
+        return list(map(float, embedding))
+
+    result = generate_embeddings([passage_text], model_choice)[0]
+    return list(map(float, result))

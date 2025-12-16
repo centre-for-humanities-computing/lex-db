@@ -13,6 +13,10 @@ from lex_db.vector_store import (
     get_vector_index_metadata,
 )
 
+from lex_db.hybrid_search import HybridSearch, HybridSearchResults
+from lex_db.hyde_search import HyDESearch
+from lex_db.hybrid_hyde_search import HybridHyDESearch, HybridHyDESearchResults
+
 logger = get_logger()
 router = APIRouter(prefix="/api", tags=["lex-db"])
 
@@ -39,6 +43,33 @@ class VectorSearchRequest(BaseModel):
 
     query_text: str
     top_k: int = 5
+
+
+class HybridSearchRequest(BaseModel):
+    """Hybrid search request model."""
+
+    query_text: str
+    top_k: int = 10
+    top_k_semantic: int = 50
+    top_k_fts: int = 50
+    rrf_k: int = 60
+
+
+class HyDESearchRequest(BaseModel):
+    """HyDE search request model."""
+
+    query_text: str
+    top_k: int = 10
+
+
+class HybridHyDESearchRequest(BaseModel):
+    """Adaptive hybrid search request model."""
+
+    query_text: str
+    top_k: int = 10
+    top_k_hyde: int = 50
+    top_k_fts: int = 50
+    rrf_k: int = 60
 
 
 @router.post(
@@ -75,6 +106,126 @@ async def vector_search(
     except Exception as e:
         logger.error(f"Error in vector search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@router.post(
+    "/hybrid-search/indexes/{index_name}/query",
+    operation_id="hybrid_search",
+    summary="Hybrid search combining semantic and keyword search with RRF fusion",
+)
+async def hybrid_search(
+    index_name: str, request: HybridSearchRequest
+) -> HybridSearchResults:
+    """Perform hybrid search using RRF fusion of semantic and keyword search."""
+    try:
+        # Determine FTS index name based on vector index name
+        fts_index = f"fts_{index_name}"
+
+        logger.info(f"Hybrid search on '{index_name}' for: {request.query_text}")
+
+        with db.get_db_connection() as conn:
+            # Verify vector index exists
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+
+            # Perform hybrid search
+            searcher = HybridSearch(
+                vector_index=index_name, fts_index=fts_index, rrf_k=request.rrf_k
+            )
+            searcher.conn = conn  # type: ignore[assignment]
+
+            results = searcher.search(
+                query=request.query_text,
+                top_k=request.top_k,
+                top_k_semantic=request.top_k_semantic,
+                top_k_fts=request.top_k_fts,
+            )
+
+            return results
+
+    except ValueError as e:
+        logger.error(f"Validation error in hybrid search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in hybrid search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Hybrid search error: {str(e)}")
+
+
+@router.post(
+    "/hyde-search/indexes/{index_name}/query",
+    operation_id="hyde_search",
+    summary="HyDE search using LLM-generated hypothetical document",
+)
+async def hyde_search(index_name: str, request: HyDESearchRequest) -> list[dict]:
+    """Perform HyDE search: generate hypothetical document, embed it, and search."""
+    try:
+        logger.info(f"HyDE search on '{index_name}' for: {request.query_text}")
+
+        with db.get_db_connection() as conn:
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+
+            searcher = HyDESearch(vector_index=index_name)
+            searcher.conn = conn  # type: ignore[assignment]
+            results = searcher.search(query=request.query_text, top_k=request.top_k)
+            return results
+
+    except ValueError as e:
+        logger.error(f"Validation error in HyDE search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in HyDE search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"HyDE search error: {str(e)}")
+
+
+@router.post(
+    "/hybrid-hyde-search/indexes/{index_name}/query",
+    operation_id="hybrid_hyde_search",
+    summary="Adaptive hybrid search with HyDE + FTS and query-type based weighting",
+)
+async def hybrid_hyde_search(
+    index_name: str, request: HybridHyDESearchRequest
+) -> list[HybridHyDESearchResults]:
+    """Perform adaptive hybrid search using HyDE + FTS with adaptive RRF weighting."""
+    try:
+        fts_index = f"fts_{index_name}"
+
+        logger.info(
+            f"Adaptive hybrid search on '{index_name}' for: {request.query_text}"
+        )
+
+        with db.get_db_connection() as conn:
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+
+            searcher = HybridHyDESearch(
+                vector_index=index_name, fts_index=fts_index, rrf_k=request.rrf_k
+            )
+            results = searcher.search(
+                query=request.query_text,
+                top_k=request.top_k,
+                top_k_hyde=request.top_k_hyde,
+                top_k_fts=request.top_k_fts,
+            )
+            return results
+
+    except ValueError as e:
+        logger.error(f"Validation error in adaptive hybrid search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in adaptive hybrid search: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Adaptive hybrid search error: {str(e)}"
+        )
 
 
 @router.get(
