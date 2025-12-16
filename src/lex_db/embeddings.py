@@ -23,7 +23,9 @@ logger = get_logger()
 class EmbeddingModel(str, Enum):
     """Supported embedding models."""
 
-    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large"
+    LOCAL_MULTILINGUAL_E5_SMALL = "intfloat/multilingual-e5-small"
+    LOCAL_MULTILINGUAL_E5_LARGE = "intfloat/multilingual-e5-large"
+    LOCAL_E5_MULTILINGUAL = "intfloat/multilingual-e5-large"  # Alias for backward compatibility
     OPENAI_ADA_002 = "text-embedding-ada-002"
     OPENAI_SMALL_003 = "text-embedding-3-small"
     OPENAI_LARGE_003 = "text-embedding-3-large"
@@ -36,6 +38,8 @@ def get_embedding_dimensions(model_choice: EmbeddingModel) -> int:
         return 384
     elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE:
         return 1024
+    elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+        return 1024  # Same as LARGE variant
     elif model_choice == EmbeddingModel.OPENAI_ADA_002:
         return 1536
     elif model_choice == EmbeddingModel.OPENAI_SMALL_003:
@@ -131,8 +135,13 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
         if (
             model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
             or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+            or model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL
         ):
-            model_name = model_choice.value
+            # Map LOCAL_E5_MULTILINGUAL to the LARGE variant for backward compatibility
+            if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+                model_name = EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE.value
+            else:
+                model_name = model_choice.value
 
             # Define cache directory for this specific model
             cache_dir = get_onnx_cache_dir()
@@ -334,7 +343,7 @@ def generate_embeddings(
     texts: list[str], model_choice: EmbeddingModel, query: bool = False
 ) -> list[list[float]]:
     """Generate embeddings for a list of texts using the specified model."""
-    if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
+    if model_choice == EmbeddingModel.MOCK_MODEL:
         logger.debug(f"Generating MOCK embeddings for {len(texts)} texts")
         # Return a list of random dummy embeddings for testing
         return [
@@ -347,6 +356,7 @@ def generate_embeddings(
     elif (
         model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
         or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+        or model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL
     ):
         model_data = get_local_embedding_model(model_choice)
         model = model_data["model"]
@@ -468,31 +478,11 @@ def generate_query_embedding(
     query_text: str, model_choice: EmbeddingModel
 ) -> list[float]:
     """Generate embedding for a search query."""
-    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
-        # E5 queries MUST use "query: " prefix to match document space
-        formatted_query = f"query: {query_text}"
-        embedding = model.encode(formatted_query, normalize_embeddings=True)  # type: ignore[attr-defined]
-        if hasattr(embedding, "tolist"):
-            return embedding.tolist()  # type: ignore[no-any-return]
-        return list(map(float, embedding))
-
-    result = generate_embeddings([query_text], model_choice)[0]
-    return list(map(float, result))
+    return generate_embeddings([query_text], model_choice, query=True)[0]
 
 
 def generate_passage_embedding(
     passage_text: str, model_choice: EmbeddingModel
 ) -> list[float]:
     """Generate embedding for a passage/document (used for HyDE)."""
-    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
-        # E5 passages MUST use "passage: " prefix
-        formatted_passage = f"passage: {passage_text}"
-        embedding = model.encode(formatted_passage, normalize_embeddings=True)  # type: ignore[attr-defined]
-        if hasattr(embedding, "tolist"):
-            return embedding.tolist()  # type: ignore[no-any-return]
-        return list(map(float, embedding))
-
-    result = generate_embeddings([passage_text], model_choice)[0]
-    return list(map(float, result))
+    return generate_embeddings([passage_text], model_choice, query=False)[0]
