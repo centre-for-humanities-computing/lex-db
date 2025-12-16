@@ -22,6 +22,12 @@ dependencies = [
     "types-setuptools>=80.8.0.20250521",
     "types-pyyaml>=6.0.12.20250516",
     "tiktoken>=0.9.0",
+    "sentence-splitter>=1.4",
+    "optimum[onnxruntime]>=2.0.0",
+    "psycopg>=3.3.2",
+    "pgvector>=0.4.2",
+    "sqlalchemy>=2.0.45",
+    "alembic>=1.17.2",
 ]
 
 [build-system]

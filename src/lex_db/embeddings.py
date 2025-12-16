@@ -1,6 +1,13 @@
 """Embedding generation utilities for vector search in Lex DB."""
 
 from enum import Enum
+import os
+from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTQuantizer  # type: ignore
+from optimum.onnxruntime.configuration import AutoQuantizationConfig  # type: ignore
+import onnxruntime as ort  # type: ignore
+import torch
+from torch.nn.functional import normalize
+from transformers.models.auto.tokenization_auto import AutoTokenizer
 from typing import List, Optional, Tuple
 import numpy as np
 import time
@@ -8,6 +15,7 @@ from collections import deque
 from threading import Lock
 import tiktoken
 from lex_db.utils import get_logger
+from pathlib import Path
 
 logger = get_logger()
 
@@ -24,7 +32,9 @@ class EmbeddingModel(str, Enum):
 
 def get_embedding_dimensions(model_choice: EmbeddingModel) -> int:
     """Get the dimension of embeddings for a given model."""
-    if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
+    if model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
+        return 384
+    elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE:
         return 1024
     elif model_choice == EmbeddingModel.OPENAI_ADA_002:
         return 1536
@@ -105,19 +115,170 @@ class OpenAIRateLimiter:
 _openai_rate_limiter = OpenAIRateLimiter()
 
 # Module-level cache for loaded models
-_model_cache: dict[EmbeddingModel, object] = {}
+_model_cache: dict[EmbeddingModel, dict] = {}
 
 
-def get_local_embedding_model(model_choice: EmbeddingModel) -> object:
-    """Get a cached embedding model instance."""
+def get_onnx_cache_dir() -> Path:
+    """Get the directory for caching ONNX models."""
+    cache_dir = Path.home() / ".cache" / "lex-db" / "onnx-models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
+    """Get a cached ONNX embedding model instance."""
     if model_choice not in _model_cache:
-        if model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-            from sentence_transformers import SentenceTransformer
+        if (
+            model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
+            or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+        ):
+            model_name = model_choice.value
 
-            logger.info(f"Loading embedding model: {model_choice}")
-            _model_cache[model_choice] = SentenceTransformer(
-                EmbeddingModel.LOCAL_E5_MULTILINGUAL.value
+            # Define cache directory for this specific model
+            cache_dir = get_onnx_cache_dir()
+            model_cache_path = cache_dir / model_name.replace("/", "_")
+            quantized_model_path = (
+                cache_dir / f"{model_name.replace('/', '_')}_quantized"
             )
+
+            logger.info(f"Loading ONNX model: {model_name}")
+
+            sess_options = ort.SessionOptions()
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
+            # Optimize for 4-core CPU
+            sess_options.intra_op_num_threads = 4  # Use all cores for operations
+            sess_options.inter_op_num_threads = 4  # Parallel execution across ops
+            sess_options.execution_mode = (
+                ort.ExecutionMode.ORT_PARALLEL
+            )  # Enable parallel execution
+
+            # Enable additional optimizations
+            sess_options.enable_cpu_mem_arena = True
+            sess_options.enable_mem_pattern = True
+            sess_options.enable_mem_reuse = True
+
+            # Check if quantized model exists
+            if (
+                quantized_model_path.exists()
+                and (quantized_model_path / "model_quantized.onnx").exists()
+            ):
+                logger.info(
+                    f"Loading quantized ONNX model from cache: {quantized_model_path}"
+                )
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    quantized_model_path,
+                    file_name="model_quantized.onnx",
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            # Check if regular ONNX model exists
+            elif (
+                model_cache_path.exists() and (model_cache_path / "model.onnx").exists()
+            ):
+                logger.info(f"Loading ONNX model from cache: {model_cache_path}")
+                logger.info("Quantizing model to INT8 for faster inference...")
+
+                # Load the model first
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_cache_path,
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
+
+                # Quantize the model
+                quantizer = ORTQuantizer.from_pretrained(model)
+                qconfig = AutoQuantizationConfig.avx512_vnni(
+                    is_static=False, per_channel=False
+                )
+
+                # Save quantized model
+                quantized_model_path.mkdir(parents=True, exist_ok=True)
+                quantizer.quantize(
+                    save_dir=quantized_model_path,
+                    quantization_config=qconfig,
+                    file_suffix="quantized",
+                )
+                tokenizer.save_pretrained(quantized_model_path)
+
+                # Reload the quantized model
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    quantized_model_path,
+                    file_name="model_quantized.onnx",
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                logger.info(f"Quantized model saved to: {quantized_model_path}")
+            else:
+                logger.info(f"Exporting and saving ONNX model to: {model_cache_path}")
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_name,
+                    export=True,
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+                # Save the model and tokenizer to disk
+                model.save_pretrained(model_cache_path)
+                tokenizer.save_pretrained(model_cache_path)
+                logger.info(f"ONNX model saved to cache: {model_cache_path}")
+
+                # Quantize the newly exported model
+                logger.info("Quantizing model to INT8 for faster inference...")
+                quantizer = ORTQuantizer.from_pretrained(model)
+                qconfig = AutoQuantizationConfig.avx512_vnni(
+                    is_static=False, per_channel=False
+                )
+
+                quantized_model_path.mkdir(parents=True, exist_ok=True)
+                quantizer.quantize(
+                    save_dir=quantized_model_path,
+                    quantization_config=qconfig,
+                    file_suffix="quantized",
+                )
+                tokenizer.save_pretrained(quantized_model_path)
+
+                # Reload the quantized model
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    quantized_model_path,
+                    file_name="model_quantized.onnx",
+                    provider="CPUExecutionProvider",
+                    session_options=sess_options,
+                    provider_options={
+                        "CPUExecutionProvider": {
+                            "arena_extend_strategy": "kSameAsRequested",
+                        }
+                    },
+                )
+                logger.info(f"Quantized model saved to: {quantized_model_path}")
+
+            _model_cache[model_choice] = {"model": model, "tokenizer": tokenizer}
+
+            logger.info("ONNX model loaded successfully")
         else:
             raise ValueError(f"Local model not supported: {model_choice}")
 
@@ -161,8 +322,16 @@ def create_optimal_request_batches(
     return batches
 
 
+def create_text_batches(texts: List[str], batch_size: int = 32) -> List[List[str]]:
+    """Create batches of texts for parallel processing."""
+    batches = []
+    for i in range(0, len(texts), batch_size):
+        batches.append(texts[i : i + batch_size])
+    return batches
+
+
 def generate_embeddings(
-    texts: list[str], model_choice: EmbeddingModel
+    texts: list[str], model_choice: EmbeddingModel, query: bool = False
 ) -> list[list[float]]:
     """Generate embeddings for a list of texts using the specified model."""
     if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
@@ -175,25 +344,60 @@ def generate_embeddings(
             for _ in texts
         ]
 
-    elif model_choice == EmbeddingModel.LOCAL_E5_MULTILINGUAL:
-        model = get_local_embedding_model(EmbeddingModel.LOCAL_E5_MULTILINGUAL)
-        formatted_texts = [f"passage: {text}" for text in texts]
+    elif (
+        model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
+        or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+    ):
+        model_data = get_local_embedding_model(model_choice)
+        model = model_data["model"]
+        tokenizer = model_data["tokenizer"]
 
-        logger.debug(
-            f"Generating embeddings for {len(texts)} texts using E5 Multilingual model"
-        )
-        # Use getattr to safely access encode method
-        encode_method = getattr(model, "encode", None)
-        if encode_method is None:
-            raise ValueError(f"No encode method for local model: {model_choice}")
+        # Process in batches for better performance
+        batch_size = 16  # Adjust based on memory constraints
+        all_embeddings = []
 
-        embeddings = encode_method(formatted_texts, normalize_embeddings=True)
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            if query:
+                formatted_texts = [f"query: {text}" for text in batch_texts]
+            else:
+                formatted_texts = [f"passage: {text}" for text in batch_texts]
 
-        if hasattr(embeddings, "tolist"):
-            embeddings_list = embeddings.tolist()
-            return [list(map(float, emb)) for emb in embeddings_list]
+            encoded = tokenizer(
+                formatted_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+                return_token_type_ids=False,  # Disable if not needed
+                return_attention_mask=True,
+            )
 
-        return [list(map(float, emb)) for emb in embeddings]
+            with torch.no_grad():
+                outputs = model(**encoded)
+
+                token_embeddings = outputs.last_hidden_state
+                attention_mask = encoded["attention_mask"]
+
+                input_mask_expanded = (
+                    attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+                )
+
+                sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+                sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+                embeddings = sum_embeddings / sum_mask
+
+                embeddings = normalize(embeddings, p=2, dim=1)
+
+            batch_result: list[list[float]] = embeddings.cpu().numpy().tolist()
+            all_embeddings.extend(batch_result)
+
+            if len(texts) > batch_size:
+                logger.debug(
+                    f"Processed batch {i // batch_size + 1}/{(len(texts) - 1) // batch_size + 1}"
+                )
+
+        return all_embeddings
 
     elif model_choice in [
         EmbeddingModel.OPENAI_ADA_002,
@@ -202,7 +406,6 @@ def generate_embeddings(
     ]:
         try:
             from openai import OpenAI
-            import os
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             api_key = os.environ.get("OPENAI_API_KEY")
@@ -240,12 +443,12 @@ def generate_embeddings(
                     for i, batch in enumerate(batches)
                 ]
                 for future in as_completed(futures):
-                    batch_idx, result = future.result()
+                    batch_idx, result = future.result()  # type: ignore
                     if result is not None:
                         all_results[batch_idx] = result
             # Flatten results in correct order
             all_embeddings = []
-            for result in all_results:
+            for result in all_results:  # type: ignore
                 if result is not None:
                     all_embeddings.extend(result)
 

@@ -14,16 +14,30 @@ class Settings(BaseSettings):
 
     # Database settings
     DATABASE_URL: Path = Path("db/lex.db")
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_NAME: str = "lex_db"
+    DB_USER: str = "lex_user"
+    DB_PASSWORD: str = ""
 
     # API settings
     APP_NAME: str = "Lex DB API"
     DEBUG: bool = False
+
+    # Connection pooling
+    DB_POOL_MIN_SIZE: int = 2
+    DB_POOL_MAX_SIZE: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def DATABASE_URI(self) -> str:
+        """Construct the database URI."""
+        return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
 
 def get_settings() -> Settings:
