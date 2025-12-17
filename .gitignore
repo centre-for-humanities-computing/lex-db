@@ -188,5 +188,7 @@ output/.DS_Store
 
 # Database files
 *.db
+exports
 
 tmp
+
