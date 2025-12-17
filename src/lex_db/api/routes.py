@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
 
+from lex_db.embeddings import EmbeddingModel
 from lex_db.utils import get_logger
 import lex_db.database as db
 from lex_db.vector_store import (
@@ -329,3 +330,57 @@ async def get_vector_index(index_name: str) -> dict:
         raise HTTPException(
             status_code=500, detail=f"Error getting vector index metadata: {str(e)}"
         )
+
+
+class BenchmarkEmbeddingsRequest(BaseModel):
+    model_choice: EmbeddingModel = EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
+    num_texts: int = 50
+    text_length: int = 200
+
+
+class BenchmarkEmbeddingsResponse(BaseModel):
+    num_texts: int
+    avg_text_length: int
+    total_time_seconds: float
+    texts_per_second: float
+    ms_per_text: float
+    embedding_dimension: int
+
+
+@router.post(
+    "/benchmark/embeddings",
+    operation_id="benchmark_embeddings",
+    summary="Benchmark embedding generation performance",
+)
+async def benchmark_embeddings(
+    request: BenchmarkEmbeddingsRequest,
+) -> BenchmarkEmbeddingsResponse:
+    """Benchmark embedding generation with configurable parameters."""
+    import time
+    import random
+    import string
+    from lex_db.embeddings import generate_embeddings
+
+    # Generate test texts
+    texts = []
+    for _ in range(request.num_texts):
+        words = []
+        for _ in range(request.text_length // 5):
+            word = "".join(
+                random.choices(string.ascii_lowercase, k=random.randint(3, 10))
+            )
+            words.append(word)
+        texts.append(" ".join(words))
+
+    start = time.time()
+    embeddings = generate_embeddings(texts, request.model_choice)
+    elapsed = time.time() - start
+
+    return BenchmarkEmbeddingsResponse(
+        num_texts=request.num_texts,
+        avg_text_length=request.text_length,
+        total_time_seconds=round(elapsed, 3),
+        texts_per_second=round(request.num_texts / elapsed, 2),
+        ms_per_text=round((elapsed / request.num_texts) * 1000, 2),
+        embedding_dimension=len(embeddings[0]) if embeddings else 0,
+    )
