@@ -10,10 +10,9 @@ USAGE:
 """
 
 import os
-import numpy as np
 import requests # type: ignore[import-untyped]
 
-from lex_db.embeddings import EmbeddingModel, generate_passage_embedding
+from lex_db import search_utils
 
 # ===============================================================
 # CONFIGURATION
@@ -129,59 +128,6 @@ class HyDESearch:
         self.vector_index = vector_index
         self.conn = None
 
-    def embed_passage(self, passage: str) -> np.ndarray:
-        """Embed passage text."""
-        embedding = generate_passage_embedding(
-            passage, EmbeddingModel.LOCAL_E5_MULTILINGUAL
-        )
-        return np.array(embedding, dtype=np.float32)
-
-    def search_by_embedding(self, embedding: np.ndarray, top_k: int) -> list[dict]:
-        """Search vector index using embedding."""
-        if self.conn is None:
-            raise ValueError(
-                "Database connection not initialized. Assign connection to searcher.conn before calling search methods."
-            )
-        cursor = self.conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT rowid, source_article_id, chunk_sequence_id, chunk_text, distance
-            FROM {self.vector_index}
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?
-        """,
-            (embedding.tobytes(), top_k),
-        )
-
-        return [
-            {
-                "rowid": row[0],
-                "article_id": row[1],
-                "chunk_seq": row[2],
-                "chunk_text": row[3],
-                "similarity": 1
-                - (row[4] ** 2 / 2),  # Convert L2 distance to cosine similarity
-            }
-            for row in cursor.fetchall()
-        ]
-
-    def get_headwords(self, article_ids: list[int]) -> dict[int, str]:
-        """Fetch article headwords."""
-        if not article_ids:
-            return {}
-        if self.conn is None:
-            raise ValueError(
-                "Database connection not initialized. Assign connection to searcher.conn before calling search methods."
-            )
-        cursor = self.conn.cursor()
-        placeholders = ",".join("?" * len(article_ids))
-        cursor.execute(
-            f"SELECT id, headword FROM articles WHERE id IN ({placeholders})",
-            article_ids,
-        )
-        return {row[0]: row[1] for row in cursor.fetchall()}
-
     def search(self, query: str, top_k: int = 10) -> list[dict]:
         """
         Search using HyDE approach.
@@ -194,22 +140,39 @@ class HyDESearch:
         if not query or not query.strip():
             raise ValueError("Query cannot be empty")
 
+        if self.conn is None:
+            raise ValueError(
+                "Database connection not initialized. Assign connection to searcher.conn before calling search methods."
+            )
+
         query = query.strip()
         # Step 1: Generate hypothetical passage
         hypothetical = generate_hypothetical_passage(query)
 
         # Step 2: Embed passage
-        embedding = self.embed_passage(hypothetical)
+        embedding = search_utils.embed_passage(hypothetical)
 
-        # Step 3: Search
-        results = self.search_by_embedding(embedding, TOP_K_CANDIDATES)
+        # Step 3: Search vector index using embedding
+        results = search_utils.search_by_embedding(
+            conn=self.conn,
+            vector_index=self.vector_index,
+            embedding=embedding,
+            top_k=TOP_K_CANDIDATES,
+            rank_key="rank",
+            include_distance=True
+        )
+
+        # Convert distance to similarity score
+        for r in results:
+            r["similarity"] = 1 - (r["distance"] ** 2 / 2)  # Convert L2 distance to cosine similarity
+            del r["distance"]  # Remove distance, keep only similarity
 
         # Get top results
         top_results = results[:top_k]
 
         # Fetch headwords and format output
         article_ids = list({int(r["article_id"]) for r in top_results})
-        headwords = self.get_headwords(article_ids)
+        headwords = search_utils.get_article_headwords(self.conn, article_ids)
 
         return [
             {

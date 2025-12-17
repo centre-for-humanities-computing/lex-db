@@ -11,11 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Set
 from dataclasses import dataclass
 from enum import Enum
-import numpy as np
 import requests # type: ignore[import-untyped]
 
 from lex_db.database import create_connection
-from lex_db.embeddings import EmbeddingModel, generate_passage_embedding
+from lex_db import search_utils
 
 # ===============================================================
 # CONFIGURATION
@@ -50,14 +49,6 @@ Regler for afsnittet:
 - Nævn relevante navne, begreber og årstal
 - Skriv i encyklopædisk stil, ikke som en AI-assistent
 - Hvis du er usikker på detaljer, hold dig til generelle fakta"""
-
-DEFAULT_STOPWORDS: Set[str] = {
-"og", "i", "på", "det", "en", "den", "at", "til", "der", "da", "af", "de",
-"han", "hun", "fra", "som", "et", "var", "for", "ikke", "kan", "hans", "er",
-"mellem", "havde", "ham", "hendes", "sig", "eller", "hvad", "hvilke",
-"hvordan", "hvorfor", "denne", "dette", "disse", "være", "bliver", "blev",
-"vil", "ville", "skal", "skulle", "har", "have", "med", "om", "så", "når",
-}
 
 # ===============================================================
 # QUERY TYPE CLASSIFICATION
@@ -247,191 +238,7 @@ class HybridHyDESearch:
         self.vector_index = vector_index
         self.fts_index = fts_index
         self.rrf_k = rrf_k
-        self.stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
-
-    def embed_passage(self, passage: str) -> np.ndarray:
-        """Embed passage text using local E5 model."""
-        embedding = generate_passage_embedding(
-            passage, EmbeddingModel.LOCAL_E5_MULTILINGUAL
-        )
-        return np.array(embedding, dtype=np.float32)
-
-    def search_by_embedding(self, embedding: np.ndarray, top_k: int) -> list[dict]:
-        """Search vector index using embedding."""
-        conn = create_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT rowid, source_article_id, chunk_sequence_id, chunk_text, distance
-                FROM {self.vector_index}
-                WHERE embedding MATCH ?
-                ORDER BY distance
-                LIMIT ?
-            """,
-                (embedding.tobytes(), top_k),
-            )
-
-            return [
-                {
-                    "rowid": row[0],
-                    "article_id": row[1],
-                    "chunk_seq": row[2],
-                    "chunk_text": row[3],
-                    "hyde_rank": rank,
-                }
-                for rank, row in enumerate(cursor.fetchall(), 1)
-            ]
-        finally:
-            conn.close()
-
-    def search_hyde(self, query: str, top_k: int) -> tuple[list[dict], str, QueryType]:
-        """Perform HyDE search and classify query.
-
-        Returns:
-            tuple: (results, hypothetical_passage, query_type)
-        """
-        hypothetical, query_type = generate_hypothetical_passage(query)
-
-        embedding = self.embed_passage(hypothetical)
-
-        results = self.search_by_embedding(embedding, top_k)
-
-        return results, hypothetical, query_type
-
-    def sanitize_fts_query(self, query: str) -> Optional[str]:
-        """Clean query for FTS5 MATCH syntax."""
-        cleaned = "".join(c if c.isalnum() or c in " æøåÆØÅ-" else " " for c in query)
-
-        # Filter stopwords efficiently (single strip per word)
-        words = []
-        for w in cleaned.split():
-            w = w.strip()
-            if w and w.lower() not in self.stopwords:
-                words.append(w)
-
-        if not words:
-            return None
-
-        phrase = f'"{" ".join(words)}"'
-        individual_terms = " OR ".join(f'"{w}"' for w in words)
-
-        return f"{phrase} OR ({individual_terms})"
-
-    def search_fts5(self, query: str, top_k: int) -> list[dict]:
-        """Get ranked candidates from FTS5 keyword search."""
-        fts_query = self.sanitize_fts_query(query)
-
-        if fts_query is None:
-            return []
-
-        conn = create_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT fts.rowid, vec.source_article_id, vec.chunk_sequence_id, vec.chunk_text, bm25({self.fts_index}) as bm25_score
-                FROM {self.fts_index} fts
-                JOIN {self.vector_index} vec ON fts.rowid = vec.rowid
-                WHERE {self.fts_index} MATCH ?
-                ORDER BY bm25({self.fts_index})
-                LIMIT ?
-            """,
-                (fts_query, top_k),
-            )
-
-            results = [
-                {
-                    "rowid": row[0],
-                    "article_id": row[1],
-                    "chunk_seq": row[2],
-                    "chunk_text": row[3],
-                    "fts_rank": rank,
-                }
-                for rank, row in enumerate(cursor.fetchall(), 1)
-            ]
-
-            return results
-        finally:
-            conn.close()
-
-    def calculate_rrf_score(
-        self, hyde_rank: Optional[int], fts_rank: Optional[int], weights: QueryWeights
-    ) -> float:
-        """Calculate weighted RRF score, normalized by total weight.
-
-        Normalization ensures scores are comparable across different query types
-        with different weight distributions.
-        """
-        score = 0.0
-        if hyde_rank is not None:
-            score += weights.hyde_weight * (1.0 / (self.rrf_k + hyde_rank))
-        if fts_rank is not None:
-            score += weights.fts_weight * (1.0 / (self.rrf_k + fts_rank))
-
-        # Normalize by total weight to make scores comparable across query types
-        total_weight = weights.hyde_weight + weights.fts_weight
-        if total_weight > 0:
-            score = score / total_weight
-
-        return score
-
-    def fuse_results(
-        self, hyde_results: list[dict], fts_results: list[dict], weights: QueryWeights
-    ) -> list[dict]:
-        """Fuse HyDE and FTS results using weighted RRF."""
-        combined = {}
-
-        for r in hyde_results:
-            rid = r["rowid"]
-            combined[rid] = {
-                "rowid": rid,
-                "article_id": r["article_id"],
-                "chunk_seq": r["chunk_seq"],
-                "chunk_text": r["chunk_text"],
-                "hyde_rank": r["hyde_rank"],
-                "fts_rank": None,
-                "source": "HYDE",
-            }
-
-        for r in fts_results:
-            rid = r["rowid"]
-            if rid in combined:
-                combined[rid]["fts_rank"] = r["fts_rank"]
-                combined[rid]["source"] = "BOTH"
-            else:
-                combined[rid] = {
-                    "rowid": rid,
-                    "article_id": r["article_id"],
-                    "chunk_seq": r["chunk_seq"],
-                    "chunk_text": r["chunk_text"],
-                    "hyde_rank": None,
-                    "fts_rank": r["fts_rank"],
-                    "source": "FTS5",
-                }
-
-        for data in combined.values():
-            data["rrf_score"] = self.calculate_rrf_score(
-                data["hyde_rank"], data["fts_rank"], weights
-            )
-
-        return sorted(combined.values(), key=lambda x: x["rrf_score"], reverse=True)
-
-    def get_article_headwords(self, article_ids: list[int]) -> dict[int, str]:
-        """Fetch article headwords for display."""
-        if not article_ids:
-            return {}
-        conn = create_connection()
-        try:
-            cursor = conn.cursor()
-            placeholders = ",".join("?" * len(article_ids))
-            cursor.execute(
-                f"SELECT id, headword FROM articles WHERE id IN ({placeholders})",
-                article_ids,
-            )
-            return {row[0]: row[1] for row in cursor.fetchall()}
-        finally:
-            conn.close()
+        self.stopwords = stopwords if stopwords is not None else search_utils.DEFAULT_STOPWORDS
 
     def search(
         self,
@@ -453,6 +260,41 @@ class HybridHyDESearch:
 
         query = query.strip()
 
+        # Helper function for HyDE search
+        def search_hyde_internal(q: str, tk: int) -> tuple[list[dict], str, QueryType]:
+            """Perform HyDE search and classify query."""
+            hypothetical, qtype = generate_hypothetical_passage(q)
+            embedding = search_utils.embed_passage(hypothetical)
+
+            conn = create_connection()
+            try:
+                results = search_utils.search_by_embedding(
+                    conn=conn,
+                    vector_index=self.vector_index,
+                    embedding=embedding,
+                    top_k=tk,
+                    rank_key="hyde_rank"
+                )
+                return results, hypothetical, qtype
+            finally:
+                conn.close()
+
+        # Helper function for FTS5 search
+        def search_fts5_internal(q: str, tk: int) -> list[dict]:
+            """Get ranked candidates from FTS5 keyword search."""
+            conn = create_connection()
+            try:
+                return search_utils.search_fts5(
+                    conn=conn,
+                    vector_index=self.vector_index,
+                    fts_index=self.fts_index,
+                    query=q,
+                    top_k=tk,
+                    stopwords=self.stopwords,
+                )
+            finally:
+                conn.close()
+
         hyde_results = []
         fts_results = []
         hyde_error = None
@@ -461,8 +303,8 @@ class HybridHyDESearch:
 
         # Execute both searches in parallel with error handling
         with ThreadPoolExecutor(max_workers=2) as executor:
-            hyde_future = executor.submit(self.search_hyde, query, top_k_hyde)
-            fts_future = executor.submit(self.search_fts5, query, top_k_fts)
+            hyde_future = executor.submit(search_hyde_internal, query, top_k_hyde)
+            fts_future = executor.submit(search_fts5_internal, query, top_k_fts)
 
             for future in as_completed([hyde_future, fts_future]):  # type: ignore[type-arg,var-annotated,arg-type]
                 try:
@@ -495,12 +337,29 @@ class HybridHyDESearch:
                 error_msg += f"FTS error: {str(fts_error)}."
             raise ValueError(error_msg)
 
-        # Fuse results (works even if one is empty)
-        fused = self.fuse_results(hyde_results, fts_results, weights)
+        # Fuse results using weighted RRF
+        fused = search_utils.fuse_results_rrf(
+            results1=hyde_results,
+            results2=fts_results,
+            rank1_key="hyde_rank",
+            rank2_key="fts_rank",
+            source1_label="HYDE",
+            source2_label="FTS5",
+            rrf_k=self.rrf_k,
+            weight1=weights.hyde_weight,
+            weight2=weights.fts_weight,
+            normalize=True  # Normalize for adaptive weighting
+        )
 
         top_results = fused[:top_k]
         article_ids = list(set(int(r["article_id"]) for r in top_results))
-        headwords = self.get_article_headwords(article_ids)
+
+        # Fetch article headwords
+        conn = create_connection()
+        try:
+            headwords = search_utils.get_article_headwords(conn, article_ids)
+        finally:
+            conn.close()
 
         return [
             HybridHyDESearchResults(
