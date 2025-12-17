@@ -1,55 +1,178 @@
 # lex-db
-A repository for interacting with the lex database for the Lex AI project. This project provides a wrapper around a SQLite database to enable querying encyclopedia articles via API requests, supporting both **vector (semantic) search** and **full-text/keyword search**.
+A repository for interacting with the lex database for the Lex AI project. This project provides a wrapper around a PostgreSQL database to enable querying encyclopedia articles via API requests, supporting both **vector (semantic) search** and **full-text/keyword search**.
 
 ## Features
-- SQLite database access with `sqlite-vec` for vector search
-- Full-text search capabilities using FTS5
+- PostgreSQL database with pgvector extension for vector search
+- Full-text search capabilities using PostgreSQL native FTS with Danish language support
 - FastAPI-based REST API with automatic OpenAPI documentation
 - Hybrid querying via metadata filtering and text search
 - Vector index management and semantic search
+- Connection pooling for efficient database access
 
 ## Requirements
 - Python 3.12+
 - [Astral UV](https://github.com/astral-sh/uv) for package management
-- SQLite compiled with the `sqlite-vec` extension (required for vector search)
+- PostgreSQL 15+ with pgvector extension installed
 
 ## Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/lex-db.git
-   cd lex-db
-   ```
 
-2. Install dependencies using Make:
-   ```bash
-   make install
-   ```
+### 1. Clone the repository
+```bash
+git clone https://github.com/centre-for-humanities-computing/lex-db 
+cd lex-db
+```
 
-3. Create a `.env` file (or modify the existing one) to set the database path:
-   ```
-   # Database settings
-   DATABASE_URL=PATH/TO/DB_FILE.db
-   ```
+### 2. Install dependencies
+```bash
+make install
+```
+
+### 3. Set up PostgreSQL database
+Ensure PostgreSQL is installed and the pgvector extension is available:
+```bash
+# Install PostgreSQL and pgvector (Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install postgresql postgresql-contrib
+sudo apt-get install postgresql-15-pgvector
+
+# Or using Homebrew (macOS)
+brew install postgresql pgvector
+```
+
+### 4. Configure environment variables
+Create a `.env` file with your PostgreSQL connection details:
+```env
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=lex_db
+DB_USER=lex_user
+DB_PASSWORD=your_password_here
+DB_SSLMODE=prefer
+
+# Connection Pooling
+DB_POOL_MIN_SIZE=2
+DB_POOL_MAX_SIZE=10
+
+# Application Settings
+APP_NAME=Lex DB API
+DEBUG=false
+
+# OpenAI API (for embeddings, optional)
+OPENAI_API_KEY=your_api_key_here
+```
+
+### 5. Initialize the database
+Run the database setup script to create tables and indexes:
+```bash
+# Create database and user (run as postgres user)
+sudo -u postgres psql <<EOF
+CREATE DATABASE lex_db;
+CREATE USER lex_user WITH PASSWORD 'your_password_here';
+GRANT ALL PRIVILEGES ON DATABASE lex_db TO lex_user;
+\c lex_db
+GRANT ALL ON SCHEMA public TO lex_user;
+CREATE EXTENSION vector;
+EOF
+```
 
 ## Usage
 
-### Scripts
-- `create_fts_index.py`: Creates a full-text search index on a specified column in a table.
-  ```bash
-  uv run src/scripts/create_fts_index.py <table_name> <column_name>
-  ```
+### Database Migration from SQLite
 
-- `create_vector_index.py`: Creates a new vector index for semantic search on a given column.
-  ```bash
-  uv run src/scripts/create_vector_index.py <table_name> <column_name>
-  ```
+If you're migrating from an existing SQLite database, follow these steps:
 
-- `update_vector_indexes.py`: Populates vector indexes with embeddings using OpenAI or another embedding provider.
-  ```bash
-  uv run src/scripts/update_vector_indexes.py
-  ```
+#### 1. Migrate Articles Table
+Use pgloader to migrate the articles table:
+```bash
+# Run the migration script
+cd db
+./run_migration.sh
+```
 
-> ⚠️ Note: While `create_openai_embedding_batches.py` and `add_batch_embeddings_to_index.py` exist for batch processing, they are not recommended due to reliability issues with the OpenAI Batch API. Use `update_vector_indexes.py` instead.
+This will:
+- Migrate all articles from SQLite to PostgreSQL
+- Add full-text search (FTS) column and GIN index
+- Verify the migration was successful
+
+#### 2. Export Vector Indexes from SQLite (Optional)
+If you have existing vector indexes in SQLite that you want to preserve:
+```bash
+# Export a vector index to JSONL format
+uv run python -m scripts.export_sqlite_vector_index \
+    --sqlite-db db/lex.db \
+    --index-name e5_small \
+    --output exports/e5_small.jsonl
+```
+
+#### 3. Create Vector Index in PostgreSQL
+```bash
+# Create an empty vector index structure
+uv run python -m scripts.create_vector_index \
+    --index-name e5_small \
+    --embedding-model intfloat/multilingual-e5-small \
+    --source-table articles \
+    --source-column xhtml_md \
+    --chunking-strategy semantic_chunks \
+    --chunk-size 250 \
+    --chunk-overlap 30
+```
+
+#### 4. Import Embeddings (Optional)
+If you exported embeddings from SQLite:
+```bash
+# Import embeddings into PostgreSQL
+uv run python -m scripts.import_vector_embeddings \
+    --jsonl-file exports/e5_small.jsonl \
+    --index-name e5_small \
+    --batch-size 1000
+```
+
+Or generate new embeddings:
+```bash
+# Generate and populate embeddings from scratch
+uv run python -m scripts.update_vector_indexes \
+    --index-name e5_small \
+    --batch-size 64
+```
+
+### Managing Vector Indexes
+
+#### Create a New Vector Index
+```bash
+uv run python -m scripts.create_vector_index \
+    --index-name my_index \
+    --embedding-model text-embedding-3-small \
+    --source-table articles \
+    --source-column xhtml_md \
+    --chunking-strategy semantic_chunks
+```
+
+Available embedding models:
+- `intfloat/multilingual-e5-small` (384 dimensions, local)
+- `intfloat/multilingual-e5-large` (1024 dimensions, local)
+- `text-embedding-ada-002` (1536 dimensions, OpenAI)
+- `text-embedding-3-small` (1536 dimensions, OpenAI)
+- `text-embedding-3-large` (3072 dimensions, OpenAI)
+
+Available chunking strategies:
+- `tokens` - Token-based chunking using tiktoken
+- `characters` - Simple character-based chunking
+- `sections` - Markdown section-based chunking
+- `semantic_chunks` - Danish sentence-aware semantic chunking (recommended)
+
+#### Update Vector Index with New/Modified Articles
+```bash
+uv run python -m scripts.update_vector_indexes \
+    --index-name my_index \
+    --batch-size 64
+```
+
+This will:
+- Detect new, modified, and deleted articles
+- Remove outdated embeddings
+- Generate and add new embeddings
+- Update metadata timestamps
 
 ### Running the API Server
 Start the FastAPI server:

@@ -334,7 +334,31 @@ def create_text_batches(texts: List[str], batch_size: int = 32) -> List[List[str
 def generate_embeddings(
     texts: list[str], model_choice: EmbeddingModel, query: bool = False
 ) -> list[list[float]]:
-    """Generate embeddings for a list of texts using the specified model."""
+    """Generate embeddings for a list of texts using the specified model.
+
+    Args:
+        texts: List of text strings to embed. Must not contain empty strings.
+        model_choice: The embedding model to use.
+        query: Whether to use query prefix (for E5 models).
+
+    Returns:
+        List of embeddings, one per input text.
+
+    Raises:
+        ValueError: If any text in the list is empty or whitespace-only.
+    """
+    # Handle empty input early
+    if not texts:
+        return []
+
+    # Check for empty strings and raise error to maintain length alignment
+    empty_indices = [i for i, t in enumerate(texts) if not t.strip()]
+    if empty_indices:
+        raise ValueError(
+            f"Found {len(empty_indices)} empty/whitespace-only texts at indices {empty_indices[:5]}... "
+            f"Please filter empty strings before calling generate_embeddings()"
+        )
+
     if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
         logger.debug(f"Generating MOCK embeddings for {len(texts)} texts")
         # Return a list of random dummy embeddings for testing
@@ -342,7 +366,7 @@ def generate_embeddings(
             np.random.random_sample(
                 get_embedding_dimensions(EmbeddingModel.MOCK_MODEL)
             ).tolist()
-            for _ in texts
+            for t in texts
         ]
 
     elif (

@@ -174,7 +174,7 @@ cython_debug/
 .pypirc
 
 # DB file
-db/
+db/lex_*
 
 # Temp notes
 .notes/temp
@@ -188,5 +188,7 @@ output/.DS_Store
 
 # Database files
 *.db
+exports
 
 tmp
+

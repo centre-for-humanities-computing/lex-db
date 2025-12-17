@@ -111,6 +111,9 @@ def split_text_by_characters(text: str, chunk_size: int, overlap: int) -> list[s
     if not text:
         return []
 
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size must be greater than overlap")
+
     chunks = []
     start_index = 0
     text_len = len(text)
