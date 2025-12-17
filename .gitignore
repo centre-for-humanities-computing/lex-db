@@ -181,3 +181,14 @@ db/lex_*
 
 # Output folder
 output/.DS_Store
+
+# macOS system files
+.DS_Store
+*/.DS_Store
+
+# Database files
+*.db
+exports
+
+tmp
+
