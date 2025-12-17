@@ -447,7 +447,6 @@ def search_vector_index(
     ]
     return collected_results
 
-
 class RetrievalResult(BaseModel):
     """A single retrieval result from FTS or hybrid search."""
 
