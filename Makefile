@@ -45,7 +45,7 @@ test:
 	# Pytest will discover tests in the project (e.g., in a 'tests/' directory or files named test_*.py)
 	uv run pytest
 
-pr: generate-openapi-schema static-type-check lint-check test
+pr: generate-openapi-schema static-type-check lint test
 	@echo "--- ✅ All PR checks passed successfully ---"
 	@echo "Ready to make a PR!"
 

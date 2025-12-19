@@ -92,6 +92,7 @@ class SearchResult(BaseModel):
     rank: float
     url: Optional[str] = None
     title: str
+    headword: Optional[str] = None
 
 
 class SearchResults(BaseModel):
@@ -180,6 +181,7 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
                 rank=row[2],
                 url=get_url_base(int(row[5])) + row[3],
                 title=row[4],
+                headword=row[3],
             )
             for row in cursor.fetchall()
         ]
@@ -188,6 +190,17 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
             total=total,
             limit=limit,
         )
+
+
+def batch_search_lex_fts(queries: list[str], limit: int = 50) -> list[SearchResults]:
+    """
+    Perform batch full-text search on lex entries using FTS5.
+    """
+    results = []
+    for query in queries:
+        result = search_lex_fts(query=query, limit=limit)
+        results.append(result)
+    return results
 
 
 def search_lex_fts(
@@ -251,6 +264,7 @@ def search_lex_fts(
                 rank=row[2],
                 url=get_url_base(int(row[5])) + row[3],
                 title=row[4],
+                headword=row[4],
             )
             for row in cursor.fetchall()
         ]

@@ -17,7 +17,7 @@ from lex_db.vector_store import (
     remove_article_from_vector_index,
     search_vector_index,
 )
-from lex_db.embeddings import EmbeddingModel, get_embedding_dimensions
+from lex_db.embeddings import EmbeddingModel, TextType, get_embedding_dimensions
 from lex_db.database import search_lex_fts, get_articles_by_ids
 from scripts.create_fts_index import (
     create_fts_tables,
@@ -323,7 +323,9 @@ def test_search_vector_index_mock(db_conn: sqlite3.Connection) -> None:
     # Search the vector index
     query_text = "test article"
     top_k = 2
-    results = search_vector_index(db_conn, index_name, query_text, model_choice, top_k)
+    results = search_vector_index(
+        db_conn, index_name, [(query_text, TextType.QUERY)], model_choice, top_k
+    )[0]
 
     assert len(results.results) == top_k
     if results:

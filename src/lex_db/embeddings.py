@@ -133,6 +133,7 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
             model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
             or model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
         ):
+            # Map LOCAL_E5_MULTILINGUAL to the LARGE variant for backward compatibility
             model_name = model_choice.value
 
             # Define cache directory for this specific model
@@ -331,11 +332,16 @@ def create_text_batches(texts: List[str], batch_size: int = 32) -> List[List[str
     return batches
 
 
+class TextType(str, Enum):
+    QUERY = "query"
+    PASSAGE = "passage"
+
+
 def generate_embeddings(
-    texts: list[str], model_choice: EmbeddingModel, query: bool = False
+    texts: list[tuple[str, TextType]], model_choice: EmbeddingModel
 ) -> list[list[float]]:
     """Generate embeddings for a list of texts using the specified model."""
-    if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
+    if model_choice == EmbeddingModel.MOCK_MODEL:
         logger.debug(f"Generating MOCK embeddings for {len(texts)} texts")
         # Return a list of random dummy embeddings for testing
         return [
@@ -359,10 +365,8 @@ def generate_embeddings(
 
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i : i + batch_size]
-            if query:
-                formatted_texts = [f"query: {text}" for text in batch_texts]
-            else:
-                formatted_texts = [f"passage: {text}" for text in batch_texts]
+
+            formatted_texts = [f"{text[1].value}: {text[0]}" for text in batch_texts]
 
             encoded = tokenizer(
                 formatted_texts,
@@ -416,7 +420,9 @@ def generate_embeddings(
             client = OpenAI(api_key=api_key)
             model_name = model_choice.value
 
-            batches = create_optimal_request_batches(texts, max_tokens_per_batch=8000)
+            batches = create_optimal_request_batches(
+                [text[0] for text in texts], max_tokens_per_batch=8000
+            )
             logger.info(f"Split into {len(batches)} batches for parallel processing.")
 
             all_results: List[Optional[List[List[float]]]] = [None] * len(batches)
@@ -463,10 +469,3 @@ def generate_embeddings(
             raise ValueError(f"Error generating OpenAI embeddings: {str(e)}")
     else:
         raise ValueError(f"Unsupported embedding model: {model_choice}")
-
-
-def generate_query_embedding(
-    query_text: str, model_choice: EmbeddingModel
-) -> list[float]:
-    """Generate embedding for a search query."""
-    return generate_embeddings([query_text], model_choice, query=True)[0]
