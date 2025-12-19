@@ -8,9 +8,9 @@ from pydantic import BaseModel
 from lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
 from lex_db.embeddings import (
     EmbeddingModel,
+    TextType,
     generate_embeddings,
     get_embedding_dimensions,
-    generate_query_embedding,
 )
 from typing import Any
 
@@ -124,7 +124,10 @@ def add_single_article_to_vector_index(
     if not chunks:
         return
 
-    chunk_embeddings = generate_embeddings(chunks, model_choice=embedding_model_choice)
+    chunk_embeddings = generate_embeddings(
+        list(zip(chunks, [TextType.PASSAGE] * len(chunks))),
+        model_choice=embedding_model_choice,
+    )
 
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
@@ -164,7 +167,7 @@ def add_chunks_to_vector_index(
     cursor = db_conn.cursor()
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     embeddings = generate_embeddings(
-        [chunk_text for _, _, chunk_text in chunks_data],
+        [(chunk_text, TextType.PASSAGE) for _, _, chunk_text in chunks_data],
         model_choice=embedding_model_choice,
     )
     if not embeddings:
@@ -357,12 +360,11 @@ class VectorSearchResults(BaseModel):
 def search_vector_index(
     db_conn: sqlite3.Connection,
     vector_index_name: str,
-    query_text: str,
+    queries: list[tuple[str, TextType]],
     embedding_model: EmbeddingModel,
     top_k: int = 5,
-) -> VectorSearchResults:
-    """Search a vector index for similar content to the query text."""
-    from lex_db.embeddings import EmbeddingModel
+) -> list[VectorSearchResults]:
+    """Batch search a vector index for similar content to the query texts."""
 
     cursor = db_conn.cursor()
 
@@ -373,34 +375,36 @@ def search_vector_index(
         except Exception:
             raise ValueError(f"Unknown embedding model: {embedding_model}")
 
-    # Generate embedding for the query text
-    query_vector = generate_query_embedding(query_text, model_choice=embedding_model)
-    query_vector_json = json.dumps(query_vector)
+    embeddings = generate_embeddings(queries, model_choice=embedding_model)
+    embeddings_json = [json.dumps(emb) for emb in embeddings]
+    results = []
+    for query_vector_json in embeddings_json:
+        search_sql = f"""
+        SELECT rowid, source_article_id, chunk_sequence_id, chunk_text, distance
+        FROM {vector_index_name}
+        WHERE embedding MATCH ?
+        ORDER BY distance
+        LIMIT ?;
+        """
 
-    search_sql = f"""
-    SELECT rowid, source_article_id, chunk_sequence_id, chunk_text, distance
-    FROM {vector_index_name}
-    WHERE embedding MATCH ?
-    ORDER BY distance
-    LIMIT ?;
-    """
-
-    cursor.execute(search_sql, (query_vector_json, top_k))
-    results = cursor.fetchall()
-
-    # Format results
-    formatted_results = [
-        VectorSearchResult(
-            id_in_index=res[0],
-            source_article_id=res[1],
-            chunk_seq=res[2],
-            chunk_text=res[3],
-            distance=res[4],
+        cursor.execute(search_sql, (query_vector_json, top_k))
+        search_results = VectorSearchResults(
+            results=sorted(
+                [
+                    VectorSearchResult(
+                        id_in_index=res[0],
+                        source_article_id=res[1],
+                        chunk_seq=res[2],
+                        chunk_text=res[3],
+                        distance=res[4],
+                    )
+                    for res in cursor.fetchall()
+                ],
+                key=lambda x: x.distance,
+            )
         )
-        for res in results
-    ]
-
-    return VectorSearchResults(results=formatted_results)
+        results.append(search_results)
+    return results
 
 
 def validate_tables_exist(

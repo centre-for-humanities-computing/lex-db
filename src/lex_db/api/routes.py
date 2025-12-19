@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
 
-from lex_db.embeddings import EmbeddingModel
+from lex_db.embeddings import EmbeddingModel, TextType
 from lex_db.utils import get_logger
 import lex_db.database as db
 from lex_db.vector_store import (
@@ -14,9 +14,8 @@ from lex_db.vector_store import (
     get_vector_index_metadata,
 )
 
-from lex_db.hybrid_search import HybridSearch, HybridSearchResults
-from lex_db.hyde_search import HyDESearch
-from lex_db.hybrid_hyde_search import HybridHyDESearch, HybridHyDESearchResults
+import lex_db.advanced_search as advanced_search
+import lex_db.vector_store as vector_store
 
 logger = get_logger()
 router = APIRouter(prefix="/api", tags=["lex-db"])
@@ -54,23 +53,10 @@ class HybridSearchRequest(BaseModel):
     top_k_semantic: int = 50
     top_k_fts: int = 50
     rrf_k: int = 60
-
-
-class HyDESearchRequest(BaseModel):
-    """HyDE search request model."""
-
-    query_text: str
-    top_k: int = 10
-
-
-class HybridHyDESearchRequest(BaseModel):
-    """Adaptive hybrid search request model."""
-
-    query_text: str
-    top_k: int = 10
-    top_k_hyde: int = 50
-    top_k_fts: int = 50
-    rrf_k: int = 60
+    methods: list[advanced_search.SearchMethod] = [
+        advanced_search.SearchMethod.SEMANTIC,
+        advanced_search.SearchMethod.FULLTEXT,
+    ]
 
 
 @router.post(
@@ -96,11 +82,11 @@ async def vector_search(
             results = search_vector_index(
                 db_conn=conn,
                 vector_index_name=index_name,
-                query_text=request.query_text,
+                queries=[(request.query_text, TextType.QUERY)],
                 embedding_model=embedding_model,
                 top_k=request.top_k,
             )
-            return results
+            return results[0]
     except ValueError as e:
         logger.error(f"Validation error in vector search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -116,7 +102,7 @@ async def vector_search(
 )
 async def hybrid_search(
     index_name: str, request: HybridSearchRequest
-) -> HybridSearchResults:
+) -> advanced_search.HybridSearchResults:
     """Perform hybrid search using RRF fusion of semantic and keyword search."""
     try:
         # Determine FTS index name based on vector index name
@@ -131,18 +117,39 @@ async def hybrid_search(
                 raise HTTPException(
                     status_code=404, detail=f"Vector index '{index_name}' not found"
                 )
+            embedding_model: EmbeddingModel = meta["embedding_model"]
+            logger.info(
+                f"Searching index '{index_name}' for: {request.query_text} using model {embedding_model}"
+            )
+            # Build query lists based on requested methods
+            semantic_queries: list[tuple[str, TextType]] = []
+            keyword_queries: list[str] = []
+            query_type = advanced_search.QueryType.UNCLEAR
+            for method in request.methods:
+                if method == advanced_search.SearchMethod.SEMANTIC:
+                    semantic_queries.append((request.query_text, TextType.QUERY))
+                elif method == advanced_search.SearchMethod.FULLTEXT:
+                    keyword_queries.append(request.query_text)
+                elif method == advanced_search.SearchMethod.HYDE:
+                    passage, query_type = advanced_search.generate_hypothetical_passage(
+                        request.query_text
+                    )
+                    semantic_queries.append((passage, TextType.PASSAGE))
+                    # HyDE queries will be handled separately; skip here
+                    pass
 
             # Perform hybrid search
-            searcher = HybridSearch(
-                vector_index=index_name, fts_index=fts_index, rrf_k=request.rrf_k
-            )
-            searcher.conn = conn  # type: ignore[assignment]
-
-            results = searcher.search(
-                query=request.query_text,
+            results = advanced_search.hybrid_search(
+                semantic_queries=semantic_queries,
+                keyword_queries=keyword_queries,
+                query_type=query_type,
+                vector_index=index_name,
+                fts_index=fts_index,
+                embedding_model=embedding_model,
                 top_k=request.top_k,
                 top_k_semantic=request.top_k_semantic,
                 top_k_fts=request.top_k_fts,
+                rrf_k=request.rrf_k,
             )
 
             return results
@@ -160,7 +167,9 @@ async def hybrid_search(
     operation_id="hyde_search",
     summary="HyDE search using LLM-generated hypothetical document",
 )
-async def hyde_search(index_name: str, request: HyDESearchRequest) -> list[dict]:
+async def hyde_search(
+    index_name: str, request: VectorSearchRequest
+) -> VectorSearchResults:
     """Perform HyDE search: generate hypothetical document, embed it, and search."""
     try:
         logger.info(f"HyDE search on '{index_name}' for: {request.query_text}")
@@ -171,11 +180,18 @@ async def hyde_search(index_name: str, request: HyDESearchRequest) -> list[dict]
                 raise HTTPException(
                     status_code=404, detail=f"Vector index '{index_name}' not found"
                 )
+            passage, _ = advanced_search.generate_hypothetical_passage(
+                request.query_text
+            )
 
-            searcher = HyDESearch(vector_index=index_name)
-            searcher.conn = conn  # type: ignore[assignment]
-            results = searcher.search(query=request.query_text, top_k=request.top_k)
-            return results
+            results = vector_store.search_vector_index(
+                db_conn=conn,
+                vector_index_name=index_name,
+                queries=[(passage, TextType.PASSAGE)],
+                embedding_model=meta["embedding_model"],
+                top_k=request.top_k,
+            )
+            return results[0]
 
     except ValueError as e:
         logger.error(f"Validation error in HyDE search: {str(e)}")
@@ -183,50 +199,6 @@ async def hyde_search(index_name: str, request: HyDESearchRequest) -> list[dict]
     except Exception as e:
         logger.error(f"Error in HyDE search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"HyDE search error: {str(e)}")
-
-
-@router.post(
-    "/hybrid-hyde-search/indexes/{index_name}/query",
-    operation_id="hybrid_hyde_search",
-    summary="Adaptive hybrid search with HyDE + FTS and query-type based weighting",
-)
-async def hybrid_hyde_search(
-    index_name: str, request: HybridHyDESearchRequest
-) -> list[HybridHyDESearchResults]:
-    """Perform adaptive hybrid search using HyDE + FTS with adaptive RRF weighting."""
-    try:
-        fts_index = f"fts_{index_name}"
-
-        logger.info(
-            f"Adaptive hybrid search on '{index_name}' for: {request.query_text}"
-        )
-
-        with db.get_db_connection() as conn:
-            meta = get_vector_index_metadata(conn, index_name)
-            if not meta:
-                raise HTTPException(
-                    status_code=404, detail=f"Vector index '{index_name}' not found"
-                )
-
-            searcher = HybridHyDESearch(
-                vector_index=index_name, fts_index=fts_index, rrf_k=request.rrf_k
-            )
-            results = searcher.search(
-                query=request.query_text,
-                top_k=request.top_k,
-                top_k_hyde=request.top_k_hyde,
-                top_k_fts=request.top_k_fts,
-            )
-            return results
-
-    except ValueError as e:
-        logger.error(f"Validation error in adaptive hybrid search: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error in adaptive hybrid search: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Adaptive hybrid search error: {str(e)}"
-        )
 
 
 @router.get(
@@ -370,7 +342,7 @@ async def benchmark_embeddings(
                 random.choices(string.ascii_lowercase, k=random.randint(3, 10))
             )
             words.append(word)
-        texts.append(" ".join(words))
+        texts.append((" ".join(words), TextType.PASSAGE))
 
     start = time.time()
     embeddings = generate_embeddings(texts, request.model_choice)
