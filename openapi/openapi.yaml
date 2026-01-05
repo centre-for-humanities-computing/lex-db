@@ -73,6 +73,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/hybrid-search/indexes/{index_name}/query:
+    post:
+      tags:
+      - lex-db
+      summary: Hybrid search combining semantic and keyword search with RRF fusion
+      description: Perform hybrid search using RRF fusion of semantic and keyword
+        search.
+      operationId: hybrid_search
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HybridSearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HybridSearchResults'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/hyde-search/indexes/{index_name}/query:
+    post:
+      tags:
+      - lex-db
+      summary: HyDE search using LLM-generated hypothetical document
+      description: 'Perform HyDE search: generate hypothetical document, embed it,
+        and search.'
+      operationId: hyde_search
+      parameters:
+      - name: index_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Index Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorSearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VectorSearchResults'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/articles:
     get:
       tags:
@@ -266,6 +334,85 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HybridSearchRequest:
+      properties:
+        query_text:
+          type: string
+          title: Query Text
+        top_k:
+          type: integer
+          title: Top K
+          default: 10
+        top_k_semantic:
+          type: integer
+          title: Top K Semantic
+          default: 50
+        top_k_fts:
+          type: integer
+          title: Top K Fts
+          default: 50
+        rrf_k:
+          type: integer
+          title: Rrf K
+          default: 60
+        methods:
+          items:
+            $ref: '#/components/schemas/SearchMethod'
+          type: array
+          title: Methods
+          default:
+          - SEMANTIC
+          - FULLTEXT
+      type: object
+      required:
+      - query_text
+      title: HybridSearchRequest
+      description: Hybrid search request model.
+    HybridSearchResults:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/RetrievalResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - results
+      title: HybridSearchResults
+      description: Results of a hybrid search.
+    RetrievalResult:
+      properties:
+        rowid:
+          type: integer
+          title: Rowid
+        article_id:
+          type: integer
+          title: Article Id
+        chunk_sequence:
+          type: integer
+          title: Chunk Sequence
+        chunk_text:
+          type: string
+          title: Chunk Text
+        score:
+          type: number
+          title: Score
+      type: object
+      required:
+      - rowid
+      - article_id
+      - chunk_sequence
+      - chunk_text
+      - score
+      title: RetrievalResult
+      description: A single retrieval result.
+    SearchMethod:
+      type: string
+      enum:
+      - SEMANTIC
+      - FULLTEXT
+      - HYDE
+      title: SearchMethod
     SearchResult:
       properties:
         id:
@@ -285,6 +432,11 @@ components:
         title:
           type: string
           title: Title
+        headword:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Headword
       type: object
       required:
       - id
