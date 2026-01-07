@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     DB_POOL_MIN_SIZE: int = 2
     DB_POOL_MAX_SIZE: int = 10
 
+    # Sitemap settings
+    SITEMAP_BASE_URL: str = "https://lex.dk/.sitemap"
+    SITEMAP_REQUEST_TIMEOUT: int = 30
+    SITEMAP_MAX_RETRIES: int = 3
+    SITEMAP_RATE_LIMIT: int = 10  # Max concurrent JSON requests
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
