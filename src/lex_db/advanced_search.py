@@ -234,15 +234,17 @@ def hybrid_search(
             top_k=top_k_semantic,
         )
 
-        # Stage 1b: FTS5 keyword search
-        fts_results = search_fts5(
-            conn=conn,
-            vector_index=vector_index,
-            fts_index=fts_index,
-            queries=keyword_queries,
-            top_k=top_k_fts,
-            stopwords=stopwords,
-        )
+        # Stage 1b: FTS5 keyword search (only if keyword queries provided)
+        fts_results = []
+        if keyword_queries:
+            fts_results = search_fts5(
+                conn=conn,
+                vector_index=vector_index,
+                fts_index=fts_index,
+                queries=keyword_queries,
+                top_k=top_k_fts,
+                stopwords=stopwords,
+            )
 
         combined_results: list[list[RetrievalResult]] = [
             [
@@ -258,18 +260,24 @@ def hybrid_search(
             for res in semantic_results
         ]
 
-        combined_results.append(fts_results)
+        # Only append FTS results if they exist
+        if fts_results:
+            combined_results.append(fts_results)
 
-        query_weights = QUERY_WEIGHTS[query_type]
-        weights = [query_weights[SearchMethod.SEMANTIC]] * len(semantic_queries) + [
-            query_weights[SearchMethod.FULLTEXT]
-        ] * len(keyword_queries)
-        # Stage 2: RRF Fusion
-        fused = fuse_results_rrf(
-            results=combined_results, rrf_k=rrf_k, weights=weights, normalize=False
-        )
+        # Stage 2: Fusion (only needed if we have multiple result sets)
+        if len(combined_results) == 1:
+            # Single search method - no fusion needed, just take top-k
+            top_results = combined_results[0][:top_k]
+        else:
+            # Multiple search methods - use RRF fusion
+            query_weights = QUERY_WEIGHTS[query_type]
+            weights = [query_weights[SearchMethod.SEMANTIC]] * len(semantic_queries)
+            if keyword_queries:
+                weights.extend([query_weights[SearchMethod.FULLTEXT]] * len(keyword_queries))
 
-        # Build final results
-        top_results = fused[:top_k]
+            fused = fuse_results_rrf(
+                results=combined_results, rrf_k=rrf_k, weights=weights, normalize=False
+            )
+            top_results = fused[:top_k]
 
         return HybridSearchResults(results=top_results)
