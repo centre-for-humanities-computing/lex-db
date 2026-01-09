@@ -85,11 +85,18 @@ else
 fi
 echo ""
 
-# Step 2: Add FTS column and index
-echo -e "${YELLOW}Step 2: Adding Full-Text Search (FTS) support...${NC}"
+# Step 2: Fix timestamp timezone and add FTS column
+echo -e "${YELLOW}Step 2: Converting timestamps to UTC and adding Full-Text Search (FTS) support...${NC}"
 
 export PGPASSWORD="$PG_PASSWORD"
 psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" <<EOF
+-- Convert changed_at from timestamp to timestamptz with UTC timezone
+-- SQLite stored these as UTC strings, but pgloader loaded them as local time
+-- We need to interpret them as UTC and convert to timestamptz
+ALTER TABLE articles 
+    ALTER COLUMN changed_at TYPE timestamp with time zone 
+    USING changed_at AT TIME ZONE 'UTC';
+
 -- Add tsvector column for Full-Text Search
 -- This is a generated column that automatically updates when xhtml_md changes
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS xhtml_md_tsv tsvector 

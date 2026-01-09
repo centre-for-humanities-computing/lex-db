@@ -103,6 +103,9 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
         List of SitemapEntry objects
     """
     entries: list[SitemapEntry] = []
+    
+    # Valid encyclopedia IDs (exclude invalid domains)
+    valid_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
 
     try:
         root = ET.fromstring(xml_content)
@@ -119,17 +122,23 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
                 continue
 
             if lastmod_element is None or lastmod_element.text is None:
-                logger.warning(f"Skipping entry without <lastmod>: {loc_element.text}")
+                logger.debug(f"Skipping entry without <lastmod>: {loc_element.text}")
                 continue
 
             url = loc_element.text
             lastmod_str = lastmod_element.text
 
             try:
-                # Parse ISO 8601 datetime and ensure it's UTC
+                # Parse ISO 8601 datetime (already in Copenhagen time with correct offset)
                 lastmod = datetime.fromisoformat(lastmod_str.replace("Z", "+00:00"))
 
                 encyclopedia_id = derive_encyclopedia_id(url)
+                
+                # Skip invalid encyclopedia IDs (e.g., brugere.lex.dk)
+                if encyclopedia_id not in valid_ids:
+                    logger.debug(f"Skipping entry with invalid encyclopedia ID {encyclopedia_id}: {url}")
+                    continue
+                
                 permalink = derive_permalink(url)
 
                 entry = SitemapEntry(
@@ -141,7 +150,7 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
                 entries.append(entry)
 
             except (ValueError, Exception) as e:
-                logger.warning(f"Error parsing entry {url}: {e}")
+                logger.debug(f"Error parsing entry {url}: {e}")
                 continue
 
     except ET.ParseError as e:
