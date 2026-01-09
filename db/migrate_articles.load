@@ -45,7 +45,9 @@ INCLUDING ONLY TABLE NAMES LIKE 'articles'
 CAST 
     -- Convert SQLite TEXT timestamp to PostgreSQL TIMESTAMP WITH TIME ZONE
     -- The changed_at column stores timestamps in format: 'YYYY-MM-DD HH:MM:SS.ffffff'
-    column articles.changed_at to "timestamp with time zone"
+    -- SQLite stores these as UTC, so we first load as timestamp without timezone,
+    -- then convert to timestamptz with UTC timezone in the AFTER LOAD step
+    column articles.changed_at to "timestamp without time zone"
         drop default drop not null using zero-dates-to-null,
     
     -- Ensure integer columns are properly typed (drop SQLite's flexible typing)
