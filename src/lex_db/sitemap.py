@@ -103,7 +103,7 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
         List of SitemapEntry objects
     """
     entries: list[SitemapEntry] = []
-    
+
     # Valid encyclopedia IDs (exclude invalid domains)
     valid_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
 
@@ -133,12 +133,14 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
                 lastmod = datetime.fromisoformat(lastmod_str.replace("Z", "+00:00"))
 
                 encyclopedia_id = derive_encyclopedia_id(url)
-                
+
                 # Skip invalid encyclopedia IDs (e.g., brugere.lex.dk)
                 if encyclopedia_id not in valid_ids:
-                    logger.debug(f"Skipping entry with invalid encyclopedia ID {encyclopedia_id}: {url}")
+                    logger.debug(
+                        f"Skipping entry with invalid encyclopedia ID {encyclopedia_id}: {url}"
+                    )
                     continue
-                
+
                 permalink = derive_permalink(url)
 
                 entry = SitemapEntry(
