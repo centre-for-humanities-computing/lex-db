@@ -124,8 +124,8 @@ async def fetch_articles_batch(urls: list[str], max_concurrent: int = 10) -> lis
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def fetch_one_with_retry(url: str) -> dict | None:
-        max_retries = 5
-        base_delay = 1.0
+        max_retries = 7
+        base_delay = 5.0
 
         async with semaphore:
             for attempt in range(max_retries):
