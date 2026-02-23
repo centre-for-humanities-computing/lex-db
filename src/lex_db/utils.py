@@ -1,9 +1,12 @@
 """Utility functions for Lex DB."""
 
+import json
 import logging
 import tiktoken
 import re
 from enum import Enum
+from typing import Any
+from markdownify import markdownify as md
 from sentence_splitter import SentenceSplitter  # type: ignore
 
 # Configure logger
@@ -358,6 +361,145 @@ def split_text_by_semantic_chunks(
 
     logger_instance.debug(f"Split into {len(all_chunks)} semantic chunks.")
     return all_chunks
+
+
+def _format_metadata_key(key: str) -> str:
+    """
+    Format metadata key for display.
+
+    Converts snake_case to Title Case for better readability.
+    """
+    return key.replace("_", " ").title()
+
+
+def _format_metadata_appendix(
+    article_id: int,
+    title: str,
+    url: str | None,
+    changed_at: str | None,
+    metadata: dict[str, Any] | None,
+) -> str:
+    """
+    Format article metadata as a Markdown section.
+
+    Creates a structured metadata appendix with article information
+    and any additional metadata fields.
+
+    Args:
+        article_id: The article ID
+        title: The article title
+        url: Optional article URL
+        changed_at: Optional last modified timestamp
+        metadata: Optional dictionary of additional metadata
+
+    Returns:
+        Formatted metadata section as Markdown string
+    """
+    lines = [
+        "",
+        "---",
+        "",
+        "## Article Metadata",
+        "",
+        f"**Article ID:** {article_id}",
+        f"**Title:** {title}",
+    ]
+
+    if url:
+        lines.append(f"**URL:** {url}")
+
+    if changed_at:
+        lines.append(f"**Last Modified:** {changed_at}")
+
+    if metadata:
+        lines.append("")
+        lines.append("**Additional Metadata:**")
+        for key, value in metadata.items():
+            formatted_key = _format_metadata_key(key)
+            lines.append(f"- **{formatted_key}:** {value}")
+
+    return "\n".join(lines)
+
+
+def convert_article_json_to_markdown(
+    article_json: dict[str, Any] | str,
+    include_metadata: bool = True,
+    base_url: str = "https://lex.dk",
+) -> str:
+    """
+    Convert lex.dk article JSON to Markdown format.
+
+    Parses article JSON from lex.dk API responses and converts the HTML content
+    to clean Markdown, preserving links, formatting, and semantic structure.
+    Optionally appends article metadata as a structured section.
+
+    Args:
+        article_json: Article JSON dict or JSON string from lex.dk API
+        include_metadata: Whether to append metadata section (default: True)
+        base_url: Base URL for resolving relative links (default: "https://lex.dk")
+
+    Returns:
+        Markdown formatted article content with optional metadata appendix
+
+    Raises:
+        ValueError: If JSON is malformed or missing required fields (id, title, xhtml_body)
+
+    Examples:
+        >>> json_data = {"id": 12345, "title": "Test", "xhtml_body": "<p>Content</p>"}
+        >>> markdown = convert_article_json_to_markdown(json_data)
+        >>> print(markdown)
+        Content
+        <BLANKLINE>
+        ---
+        <BLANKLINE>
+        ## Article Metadata
+        ...
+    """
+    # Parse JSON if string provided
+    if isinstance(article_json, str):
+        try:
+            article_data = json.loads(article_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Malformed JSON: {e}")
+    else:
+        article_data = article_json
+
+    # Validate required fields
+    required_fields = ["id", "title", "xhtml_body"]
+    missing_fields = [field for field in required_fields if field not in article_data]
+    if missing_fields:
+        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+
+    # Extract fields
+    article_id = article_data["id"]
+    title = article_data["title"]
+    xhtml_body = article_data["xhtml_body"]
+    url = article_data.get("url")
+    changed_at = article_data.get("changed_at")
+    metadata = article_data.get("metadata")
+
+    # Convert HTML to Markdown
+    if not xhtml_body or not xhtml_body.strip():
+        markdown_content = ""
+    else:
+        markdown_content = md(
+            xhtml_body,
+            heading_style="ATX",  # Use # for headings
+            bullets="-",  # Use - for unordered lists
+            strip=["script", "style"],  # Remove unwanted tags
+            escape_asterisks=False,  # Preserve * in text
+            escape_underscores=False,  # Preserve _ in text
+        )
+
+    # Append metadata if requested
+    result = markdown_content
+    if include_metadata:
+        metadata_appendix = _format_metadata_appendix(
+            article_id, title, url, changed_at, metadata
+        )
+        result = markdown_content + metadata_appendix
+
+    return result.strip()
 
 
 def split_document_into_chunks(
