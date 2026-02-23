@@ -104,6 +104,30 @@ def create_vector_index(
     )
     logger.info(f"Foreign key constraint added to {vector_index_name}")
 
+    # Add generated tsvector column for full-text search on chunk_text
+    # This enables FTS queries without a separate FTS table
+    db_conn.execute(
+        sql.SQL("""
+            ALTER TABLE {}
+            ADD COLUMN chunk_text_tsv tsvector
+            GENERATED ALWAYS AS (to_tsvector('danish', coalesce(chunk_text, ''))) STORED
+        """).format(
+            sql.Identifier(vector_index_name),
+        )
+    )
+    logger.info(f"FTS tsvector column added to {vector_index_name}")
+
+    # Create GIN index for fast full-text search queries
+    db_conn.execute(
+        sql.SQL("""
+            CREATE INDEX {} ON {} USING GIN(chunk_text_tsv)
+        """).format(
+            sql.Identifier(f"{vector_index_name}_fts_idx"),
+            sql.Identifier(vector_index_name),
+        )
+    )
+    logger.info(f"GIN index created on {vector_index_name}.chunk_text_tsv")
+
     db_conn.commit()
 
     # Insert metadata if all required fields are provided
@@ -145,65 +169,6 @@ def create_vector_index(
         logger.warning(
             f"Metadata not stored for index '{vector_index_name}': source_table or source_column missing."
         )
-
-
-def add_single_article_to_vector_index(
-    db_conn: Connection[Any],
-    vector_index_name: str,
-    article_rowid: str,
-    article_text: str,
-    embedding_model_choice: EmbeddingModel,
-    chunk_size: int = 512,
-    chunk_overlap: int = 50,
-    chunking_strategy: ChunkingStrategy = ChunkingStrategy.SECTIONS,
-) -> None:
-    """Add a single article to an existing vector index."""
-    raise NotImplementedError(
-        "Vector index operations are not yet implemented for PostgreSQL. "
-        "This will be migrated in Sub-Issue 5 of the PostgreSQL migration."
-    )
-    if not article_text:
-        return
-
-    cursor = db_conn.cursor()
-    chunks = split_document_into_chunks(
-        article_text,
-        chunk_size=chunk_size,
-        overlap=chunk_overlap,
-        chunking_strategy=chunking_strategy,
-    )
-
-    if not chunks:
-        return
-
-    chunk_embeddings = generate_embeddings(
-        list(zip(chunks, [TextType.PASSAGE] * len(chunks))),
-        model_choice=embedding_model_choice,
-    )
-
-    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-
-    for i, (chunk_text, chunk_embedding) in enumerate(zip(chunks, chunk_embeddings)):
-        insert_sql = f"""
-        INSERT INTO {vector_index_name} (
-            embedding, source_article_id, chunk_sequence_id, chunk_text, 
-            last_updated
-        )
-        VALUES (?, ?, ?, ?, ?);
-        """
-        cursor.execute(
-            insert_sql,
-            (
-                json.dumps(chunk_embedding),
-                article_rowid,
-                i,
-                chunk_text,
-                current_time_str,
-            ),
-        )
-
-    db_conn.commit()
-    logger.debug(f"Added article {article_rowid} to index {vector_index_name}.")
 
 
 def add_chunks_to_vector_index(
@@ -445,7 +410,6 @@ def search_vector_index(
     embeddings = generate_embeddings(queries, model_choice=embedding_model)
     results = []
     for query_vector in embeddings:
-
         # pgvector query using cosine distance operator (<=>)
         # The query vector is passed twice because we use it in both SELECT and ORDER BY
         result = db_conn.execute(
@@ -476,12 +440,85 @@ def search_vector_index(
                     chunk_text=res["chunk_text"],  # type: ignore[call-overload]
                     distance=res["distance"],  # type: ignore[call-overload]
                 )
-            for res in query_result 
+                for res in query_result
             ]
         )
         for query_result in results
     ]
     return collected_results
+
+
+class RetrievalResult(BaseModel):
+    """A single retrieval result from FTS or hybrid search."""
+
+    id: int
+    article_id: int
+    chunk_sequence: int
+    chunk_text: str
+    score: float
+
+
+def search_fts_chunks(
+    db_conn: Connection[Any],
+    vector_index_name: str,
+    queries: list[str],
+    top_k: int = 50,
+) -> list[RetrievalResult]:
+    """
+    Search vector index chunks using PostgreSQL full-text search.
+
+    Uses the generated tsvector column (chunk_text_tsv) with Danish language
+    configuration for full-text search. Returns results ranked by ts_rank().
+
+    Args:
+        db_conn: PostgreSQL database connection
+        vector_index_name: Name of the vector index table (must have chunk_text_tsv column)
+        queries: List of query strings to search for
+        top_k: Maximum number of results to return per query
+
+    Returns:
+        List of RetrievalResult objects with id, article_id, chunk_sequence,
+        chunk_text, and score (ts_rank).
+    """
+    if not queries:
+        return []
+
+    results: list[RetrievalResult] = []
+
+    for query in queries:
+        if not query or not query.strip():
+            continue
+
+        # Use plainto_tsquery for natural language queries
+        # It handles tokenization and Danish stemming automatically
+        result = db_conn.execute(
+            sql.SQL("""
+                SELECT
+                    id,
+                    source_article_id,
+                    chunk_sequence_id,
+                    chunk_text,
+                    ts_rank(chunk_text_tsv, plainto_tsquery('danish', %s)) AS score
+                FROM {}
+                WHERE chunk_text_tsv @@ plainto_tsquery('danish', %s)
+                ORDER BY score DESC
+                LIMIT %s
+            """).format(sql.Identifier(vector_index_name)),
+            (query, query, top_k),
+        )
+
+        for row in result.fetchall():
+            results.append(
+                RetrievalResult(
+                    id=row["id"],  # type: ignore[call-overload]
+                    article_id=row["source_article_id"],  # type: ignore[call-overload]
+                    chunk_sequence=row["chunk_sequence_id"],  # type: ignore[call-overload]
+                    chunk_text=row["chunk_text"],  # type: ignore[call-overload]
+                    score=row["score"],  # type: ignore[call-overload]
+                )
+            )
+
+    return results
 
 
 def update_vector_index(

@@ -175,7 +175,7 @@ cython_debug/
 
 # DB file
 db/lex_*
-
+db/*.jsonl
 # Temp notes
 .notes/temp
 

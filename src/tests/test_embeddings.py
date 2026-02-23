@@ -3,9 +3,9 @@
 import pytest
 from lex_db.embeddings import (
     EmbeddingModel,
+    TextType,
     get_embedding_dimensions,
     generate_embeddings,
-    generate_query_embedding,
     create_text_batches,
 )
 
@@ -39,7 +39,9 @@ class TestGenerateEmbeddings:
     """Tests for generate_embeddings function."""
 
     def test_mock_model_generates_embeddings(
-        self, sample_texts: list[str], mock_embedding_model: EmbeddingModel
+        self,
+        sample_texts: list[tuple[str, TextType]],
+        mock_embedding_model: EmbeddingModel,
     ) -> None:
         """Test MOCK_MODEL generates embeddings with correct dimensions."""
         embeddings = generate_embeddings(sample_texts, mock_embedding_model)
@@ -55,7 +57,9 @@ class TestGenerateEmbeddings:
 
     def test_single_text(self, mock_embedding_model: EmbeddingModel) -> None:
         """Test single text generates single embedding."""
-        embeddings = generate_embeddings(["Test text"], mock_embedding_model)
+        embeddings = generate_embeddings(
+            [("Test text", TextType.PASSAGE)], mock_embedding_model
+        )
 
         assert len(embeddings) == 1
         assert len(embeddings[0]) == 4
@@ -68,9 +72,12 @@ class TestGenerateEmbeddings:
         Note: First run will be slow (model download/quantization),
         subsequent runs use cached model.
         """
-        texts = ["Dette er en test.", "Her er mere tekst."]
+        texts = [
+            ("Dette er en test.", TextType.PASSAGE),
+            ("Her er mere tekst.", TextType.PASSAGE),
+        ]
         embeddings = generate_embeddings(
-            texts, EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL, query=False
+            texts, EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
         )
 
         # Verify correct number of embeddings
@@ -95,12 +102,12 @@ class TestGenerateEmbeddings:
 
         # Generate with query=True
         query_emb = generate_embeddings(
-            [text], EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL, query=True
+            [(text, TextType.QUERY)], EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
         )[0]
 
         # Generate with query=False (passage)
         passage_emb = generate_embeddings(
-            [text], EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL, query=False
+            [(text, TextType.PASSAGE)], EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL
         )[0]
 
         # Embeddings should be different due to different prefixes
@@ -116,7 +123,14 @@ class TestGenerateEmbeddings:
         self, mock_embedding_model: EmbeddingModel
     ) -> None:
         """Test that empty strings raise ValueError."""
-        texts = ["Valid text", "", "  ", "\t", "\n", "Another valid text"]
+        texts = [
+            ("Valid text", TextType.PASSAGE),
+            ("", TextType.PASSAGE),
+            ("  ", TextType.PASSAGE),
+            ("\t", TextType.PASSAGE),
+            ("\n", TextType.PASSAGE),
+            ("Another valid text", TextType.PASSAGE),
+        ]
 
         with pytest.raises(ValueError, match="empty/whitespace-only texts"):
             generate_embeddings(texts, mock_embedding_model)
@@ -129,16 +143,18 @@ class TestGenerateQueryEmbedding:
         self, mock_embedding_model: EmbeddingModel
     ) -> None:
         """Test generates single embedding for query text."""
-        embedding = generate_query_embedding("Test query", mock_embedding_model)
+        embedding = generate_embeddings(
+            [("Test query", TextType.QUERY)], mock_embedding_model
+        )
 
         assert isinstance(embedding, list)
-        assert len(embedding) == 4
-        assert all(isinstance(val, float) for val in embedding)
+        assert len(embedding[0]) == 4
+        assert all(isinstance(val, float) for val in embedding[0])
 
     def test_empty_query_text(self, mock_embedding_model: EmbeddingModel) -> None:
         """Test empty query text raises error."""
         with pytest.raises(ValueError, match="empty/whitespace-only texts"):
-            generate_query_embedding("", mock_embedding_model)
+            generate_embeddings([("", TextType.QUERY)], mock_embedding_model)
 
 
 class TestCreateTextBatches:

@@ -14,7 +14,7 @@ from lex_db.vector_store import (
     get_all_vector_index_metadata,
     VectorSearchResults,
 )
-from lex_db.embeddings import EmbeddingModel
+from lex_db.embeddings import EmbeddingModel, TextType
 
 
 class TestCreateVectorIndex:
@@ -305,15 +305,15 @@ class TestRemoveArticleFromVectorIndex:
 class TestSearchVectorIndex:
     """Tests for search_vector_index function."""
 
-    @patch("lex_db.vector_store.generate_query_embedding")
+    @patch("lex_db.vector_store.generate_embeddings")
     def test_search_returns_results(
         self,
-        mock_generate_query: MagicMock,
+        mock_generate_embeddings: MagicMock,
         mock_db_connection: MagicMock,
         mock_embedding_model: EmbeddingModel,
     ) -> None:
         """Test vector search returns results."""
-        mock_generate_query.return_value = [0.1, 0.2, 0.3, 0.4]
+        mock_generate_embeddings.return_value = [[0.1, 0.2, 0.3, 0.4]]
 
         # Mock search results
         search_rows = [
@@ -330,39 +330,40 @@ class TestSearchVectorIndex:
         results = search_vector_index(
             db_conn=mock_db_connection,
             vector_index_name="test_index",
-            query_text="test query",
+            queries=[("test query", TextType.QUERY)],
             embedding_model=mock_embedding_model,
             top_k=5,
         )
 
-        # Verify results
-        assert isinstance(results, VectorSearchResults)
-        assert len(results.results) == 1
-        assert results.results[0].id_in_index == 1
-        assert results.results[0].source_article_id == "123"
-        assert results.results[0].chunk_text == "Test chunk"
-        assert results.results[0].distance == 0.15
+        # Verify results (search_vector_index returns a list of VectorSearchResults)
+        assert isinstance(results, list)
+        assert isinstance(results[0], VectorSearchResults)
+        assert len(results[0].results) == 1
+        assert results[0].results[0].id_in_index == 1
+        assert results[0].results[0].source_article_id == "123"
+        assert results[0].results[0].chunk_text == "Test chunk"
+        assert results[0].results[0].distance == 0.15
 
-    @patch("lex_db.vector_store.generate_query_embedding")
+    @patch("lex_db.vector_store.generate_embeddings")
     def test_search_no_results(
         self,
-        mock_generate_query: MagicMock,
+        mock_generate_embeddings: MagicMock,
         mock_db_connection: MagicMock,
         mock_embedding_model: EmbeddingModel,
     ) -> None:
         """Test search with no matching results."""
-        mock_generate_query.return_value = [0.1, 0.2, 0.3, 0.4]
+        mock_generate_embeddings.return_value = [[0.1, 0.2, 0.3, 0.4]]
         mock_db_connection.execute.return_value.fetchall.return_value = []
 
         results = search_vector_index(
             db_conn=mock_db_connection,
             vector_index_name="test_index",
-            query_text="nonexistent",
+            queries=[("nonexistent", TextType.QUERY)],
             embedding_model=mock_embedding_model,
             top_k=5,
         )
 
-        assert len(results.results) == 0
+        assert len(results[0].results) == 0
 
 
 class TestVectorIndexMetadata:
