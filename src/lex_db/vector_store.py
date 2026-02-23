@@ -1,7 +1,5 @@
 """Vector store operations for Lex DB."""
 
-import json
-from datetime import datetime
 from psycopg import Connection
 from psycopg import sql
 from typing import Any
