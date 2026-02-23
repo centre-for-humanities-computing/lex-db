@@ -352,6 +352,7 @@ class TestUpsertArticle:
 
         assert result is False
 
+
 class TestDeleteArticles:
     """Tests for delete_articles function."""
 
