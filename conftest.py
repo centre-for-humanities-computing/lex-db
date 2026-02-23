@@ -150,3 +150,28 @@ def sample_search_results():
         total=1,
         limit=50,
     )
+
+
+# Sitemap Fixtures
+
+
+@pytest.fixture
+def sample_sitemap_xml():
+    """Sample sitemap XML with namespace."""
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://lex.dk/test-article</loc>
+        <lastmod>2025-01-01T12:00:00Z</lastmod>
+    </url>
+    <url>
+        <loc>https://om.lex.dk/another-article</loc>
+        <lastmod>2025-01-02T15:30:00Z</lastmod>
+    </url>
+</urlset>"""
+
+
+@pytest.fixture
+def sample_article_json():
+    """Sample article JSON response."""
+    return {"id": 12345, "headword": "Test Article", "content": "Article content"}
