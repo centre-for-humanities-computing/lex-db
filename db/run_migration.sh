@@ -114,7 +114,10 @@ else
 fi
 echo ""
 
-# Step 3: Verify migration
+# Step 3: Make the vector index metadata table
+psql -U $DB_USER -d $DB_NAME -f db/schema.sql
+
+# Step 4: Verify migration
 echo -e "${YELLOW}Step 3: Verifying migration...${NC}"
 
 # Count articles in PostgreSQL

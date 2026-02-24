@@ -29,7 +29,7 @@
 
 LOAD DATABASE
      FROM '{{SQLITE_DB}}'
-     INTO postgresql://{{PG_USER}}:{{PG_PASSWORD}}@{{PG_HOST}}:{{PG_PORT}}/{{PG_DB}}'
+     INTO postgresql://{{PG_USER}}:{{PG_PASSWORD}}@{{PG_HOST}}:{{PG_PORT}}/{{PG_DB}}
 
 WITH include drop, create tables, create indexes, reset sequences,
      prefetch rows = 1000,
