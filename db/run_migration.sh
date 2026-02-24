@@ -115,10 +115,11 @@ fi
 echo ""
 
 # Step 3: Make the vector index metadata table
-psql -U $DB_USER -d $DB_NAME -f db/schema.sql
+echo -e "${YELLOW}Step 3: Creating vector index metadata table...${NC}"
+psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -f db/schema.sql
 
 # Step 4: Verify migration
-echo -e "${YELLOW}Step 3: Verifying migration...${NC}"
+echo -e "${YELLOW}Step 4: Verifying migration...${NC}"
 
 # Count articles in PostgreSQL
 PG_COUNT=$(psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -t -c "SELECT COUNT(*) FROM articles;")
