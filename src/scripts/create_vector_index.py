@@ -69,7 +69,7 @@ def main() -> None:
     configure_logging(args.debug)
     settings = get_settings()
     try:
-        logger.info(f"Connecting to database at {settings.DATABASE_URL}")
+        logger.info(f"Connecting to database at {settings.DB_HOST}:{settings.DB_PORT}...")
         with get_db_connection() as db_conn:
             create_vector_index(
                 db_conn=db_conn,

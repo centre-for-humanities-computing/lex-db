@@ -45,14 +45,14 @@ def get_db_info() -> dict:
     with get_db_connection() as conn:
         # Get list of tables from PostgreSQL system catalog
         tables = [
-            row[0]
+            row["tablename"]  # type: ignore[call-overload]
             for row in conn.execute(
                 "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public';"
             ).fetchall()
         ]
 
         # Get PostgreSQL version
-        (pg_version,) = conn.execute("SELECT version();").fetchone() or ("Unknown",)
+        pg_version = conn.execute("SELECT version();").fetchone() or "Unknown"
 
         return {
             "tables": tables,
