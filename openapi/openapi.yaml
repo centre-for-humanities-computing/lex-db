@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Lex DB API
-  description: A wrapper around a SQLite database for encyclopedia articles with vector
-    and full-text search
+  description: A PostgreSQL database API for encyclopedia articles with vector and
+    full-text search
   version: 0.1.0
 paths:
   /:
@@ -382,9 +382,9 @@ components:
       description: Results of a hybrid search.
     RetrievalResult:
       properties:
-        rowid:
+        id:
           type: integer
-          title: Rowid
+          title: Id
         article_id:
           type: integer
           title: Article Id
@@ -399,13 +399,13 @@ components:
           title: Score
       type: object
       required:
-      - rowid
+      - id
       - article_id
       - chunk_sequence
       - chunk_text
       - score
       title: RetrievalResult
-      description: A single retrieval result.
+      description: A single retrieval result from FTS or hybrid search.
     SearchMethod:
       type: string
       enum:

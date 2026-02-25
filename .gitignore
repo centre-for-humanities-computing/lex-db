@@ -174,10 +174,21 @@ cython_debug/
 .pypirc
 
 # DB file
-db/
-
+db/lex_*
+db/*.jsonl
 # Temp notes
 .notes/temp
 
 # Output folder
 output/.DS_Store
+
+# macOS system files
+.DS_Store
+*/.DS_Store
+
+# Database files
+*.db
+exports
+
+tmp
+

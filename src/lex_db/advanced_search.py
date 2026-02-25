@@ -1,17 +1,13 @@
 from enum import Enum
 import os
+from typing import List, Optional
 
 import requests
 from pydantic import BaseModel
 
-from lex_db.search_utils import (
-    DEFAULT_STOPWORDS,
-    RetrievalResult,
-    fuse_results_rrf,
-    search_fts5,
-)
 import lex_db.database as db
 import lex_db.vector_store as vs
+from lex_db.vector_store import RetrievalResult, search_fts_chunks
 from lex_db.embeddings import EmbeddingModel, TextType
 
 
@@ -76,6 +72,69 @@ QUERY_WEIGHTS = {
         SearchMethod.HYDE: 1.0,
     },
 }
+
+
+def calculate_rrf_score(
+    ranks: list[int],
+    rrf_k: int,
+    weights: Optional[list[float]] = None,
+    normalize: bool = False,
+) -> float:
+    """Calculate Reciprocal Rank Fusion (RRF) score for a set of ranks."""
+    if weights is None:
+        weights = [1.0] * len(ranks)
+    if len(weights) != len(ranks):
+        raise ValueError("Length of weights must match length of ranks")
+
+    score = 0.0
+    for rank, weight in zip(ranks, weights):
+        score += weight * (1.0 / (rrf_k + rank))
+
+    if normalize:
+        total_weight = sum(weights)
+        if total_weight > 0:
+            score = score / total_weight
+
+    return score
+
+
+def fuse_results_rrf(
+    results: list[list[RetrievalResult]],
+    rrf_k: int,
+    weights: Optional[list[float]] = None,
+    normalize: bool = False,
+) -> List[RetrievalResult]:
+    """Fuse multiple sets of search results using Reciprocal Rank Fusion."""
+    combined: dict[int, tuple[list[RetrievalResult], list[float]]] = {}
+    if weights is None:
+        weights = [1.0 for _ in results]
+
+    if len(weights) != len(results):
+        raise ValueError("Length of weights must match number of result sets")
+
+    for method_weight, method_results in zip(weights, results):
+        for r in method_results:
+            rid = r.id
+            if rid not in combined:
+                combined[rid] = ([], [])
+            combined[rid][0].append(r)
+            combined[rid][1].append(method_weight)
+
+    fused_results: List[RetrievalResult] = []
+    for rid, (res_list, weight_list) in combined.items():
+        ranks = list(range(1, len(res_list) + 1))
+        score = calculate_rrf_score(ranks, rrf_k, weight_list, normalize)
+        fused_results.append(
+            RetrievalResult(
+                id=rid,
+                article_id=res_list[0].article_id,
+                chunk_sequence=res_list[0].chunk_sequence,
+                chunk_text=res_list[0].chunk_text,
+                score=score,
+            )
+        )
+
+    return sorted(fused_results, key=lambda x: x.score, reverse=True)
 
 
 def generate_hypothetical_passage(query: str) -> tuple[str, QueryType]:
@@ -209,15 +268,13 @@ def hybrid_search(
     keyword_queries: list[str],
     query_type: QueryType = QueryType.UNCLEAR,
     vector_index: str = "article_embeddings_e5",
-    fts_index: str = "fts_article_embeddings_e5",
     embedding_model: EmbeddingModel = EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
     top_k: int = 10,
     top_k_semantic: int = 50,
     top_k_fts: int = 50,
     rrf_k: int = 60,
-    stopwords: set[str] = DEFAULT_STOPWORDS,
 ) -> HybridSearchResults:
-    """Hybrid search with RRF fusion."""
+    """Hybrid search with RRF fusion using PostgreSQL FTS."""
 
     if not semantic_queries and not keyword_queries:
         raise ValueError(
@@ -234,22 +291,20 @@ def hybrid_search(
             top_k=top_k_semantic,
         )
 
-        # Stage 1b: FTS5 keyword search (only if keyword queries provided)
+        # Stage 1b: FTS keyword search (only if keyword queries provided)
         fts_results = []
         if keyword_queries:
-            fts_results = search_fts5(
-                conn=conn,
-                vector_index=vector_index,
-                fts_index=fts_index,
+            fts_results = search_fts_chunks(
+                db_conn=conn,
+                vector_index_name=vector_index,
                 queries=keyword_queries,
                 top_k=top_k_fts,
-                stopwords=stopwords,
             )
 
         combined_results: list[list[RetrievalResult]] = [
             [
                 RetrievalResult(
-                    rowid=r.id_in_index,
+                    id=r.id_in_index,
                     article_id=int(r.source_article_id),
                     chunk_sequence=r.chunk_seq,
                     chunk_text=r.chunk_text,
@@ -273,7 +328,9 @@ def hybrid_search(
             query_weights = QUERY_WEIGHTS[query_type]
             weights = [query_weights[SearchMethod.SEMANTIC]] * len(semantic_queries)
             if keyword_queries:
-                weights.extend([query_weights[SearchMethod.FULLTEXT]] * len(keyword_queries))
+                weights.extend(
+                    [query_weights[SearchMethod.FULLTEXT]] * len(keyword_queries)
+                )
 
             fused = fuse_results_rrf(
                 results=combined_results, rrf_k=rrf_k, weights=weights, normalize=False

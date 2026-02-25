@@ -28,9 +28,10 @@ async def get_tables() -> dict[str, list[str]]:
     """Get a list of tables in the database."""
     try:
         with db.get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = [row[0] for row in cursor.fetchall()]
+            rows = conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
+            ).fetchall()
+            tables = [row["tablename"] for row in rows] # type: ignore[call-overload]
 
             return {"tables": tables}
     except Exception as e:
@@ -105,9 +106,6 @@ async def hybrid_search(
 ) -> advanced_search.HybridSearchResults:
     """Perform hybrid search using RRF fusion of semantic and keyword search."""
     try:
-        # Determine FTS index name based on vector index name
-        fts_index = f"fts_{index_name}"
-
         logger.info(f"Hybrid search on '{index_name}' for: {request.query_text}")
 
         with db.get_db_connection() as conn:
@@ -144,7 +142,6 @@ async def hybrid_search(
                 keyword_queries=keyword_queries,
                 query_type=query_type,
                 vector_index=index_name,
-                fts_index=fts_index,
                 embedding_model=embedding_model,
                 top_k=request.top_k,
                 top_k_semantic=request.top_k_semantic,
