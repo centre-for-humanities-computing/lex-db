@@ -325,4 +325,4 @@ class TestFetchArticlesBatch:
 
                 # Should return empty list after all retries fail
                 assert len(result) == 0
-                assert mock_fetch.call_count == 5  # max_retries = 5
+                assert mock_fetch.call_count == 7  # max_retries = 7
