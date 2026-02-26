@@ -1,7 +1,5 @@
 """Vector store operations for Lex DB."""
 
-import json
-from datetime import datetime
 from psycopg import Connection
 from psycopg import sql
 from typing import Any
@@ -661,17 +659,6 @@ def update_vector_index(
 
         logger.info(f"Chunks added: {stats['created']}/{len(chunks_to_create)}")
 
-    # Update the metadata table's updated_at field for this index
-    try:
-        update_vector_index_metadata(db_conn, vector_index_name)
-        logger.info(
-            f"Updated metadata for index '{vector_index_name}' (updated_at field)."
-        )
-    except Exception as e:
-        logger.warning(
-            f"Could not update metadata for index '{vector_index_name}': {e}"
-        )
-
     logger.info(f"Update summary: {stats}")
     return stats
 
@@ -781,12 +768,13 @@ def update_vector_index_metadata(
         fields.append(f"{key} = %s")
         values.append(value)
 
-    # No need to manually set updated_at - the trigger handles it
-    values.append(index_name)
-    sql = f"UPDATE vector_index_metadata SET {', '.join(fields)} WHERE index_name = %s"
+    if fields and values:
+        # No need to manually set updated_at - the trigger handles it
+        values.append(index_name)
+        sql = f"UPDATE vector_index_metadata SET {', '.join(fields)} WHERE index_name = %s"
 
-    db_conn.execute(sql, values)
-    db_conn.commit()
+        db_conn.execute(sql, values)
+        db_conn.commit()
 
 
 def get_all_vector_index_metadata(db_conn: Connection[Any]) -> list[dict]:

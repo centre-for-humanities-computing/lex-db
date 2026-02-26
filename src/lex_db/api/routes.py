@@ -31,7 +31,7 @@ async def get_tables() -> dict[str, list[str]]:
             rows = conn.execute(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
             ).fetchall()
-            tables = [row["tablename"] for row in rows] # type: ignore[call-overload]
+            tables = [row["tablename"] for row in rows]  # type: ignore[call-overload]
 
             return {"tables": tables}
     except Exception as e:
