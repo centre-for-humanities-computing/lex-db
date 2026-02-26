@@ -273,8 +273,8 @@ class TestFetchAllSitemaps:
             entries = await fetch_all_sitemaps()
 
             # Should only include encyclopedia IDs 14 and 15 (not 1)
-            assert len(entries) == 2
-            assert all(e.encyclopedia_id in {14, 15, 18, 19, 20} for e in entries)
+            assert len(entries[0]) == 2
+            assert all(e.encyclopedia_id in {14, 15, 18, 19, 20} for e in entries[0])
 
     async def test_custom_encyclopedia_filter(self) -> None:
         """Test filtering by custom encyclopedia IDs."""
@@ -298,8 +298,8 @@ class TestFetchAllSitemaps:
             entries = await fetch_all_sitemaps(encyclopedia_ids={15})
 
             # Should only include encyclopedia ID 15
-            assert len(entries) == 1
-            assert entries[0].encyclopedia_id == 15
+            assert len(entries[0]) == 1
+            assert entries[0][0].encyclopedia_id == 15
 
     async def test_deduplication_keeps_most_recent(self) -> None:
         """Test that deduplication keeps entry with most recent lastmod."""
@@ -335,8 +335,8 @@ class TestFetchAllSitemaps:
             entries = await fetch_all_sitemaps()
 
             # Should have only one entry with the most recent date
-            assert len(entries) == 1
-            assert entries[0].lastmod == datetime(
+            assert len(entries[0]) == 1
+            assert entries[0][0].lastmod == datetime(
                 2025, 1, 2, 12, 0, 0, tzinfo=timezone.utc
             )
 
@@ -369,7 +369,7 @@ class TestFetchAllSitemaps:
             entries = await fetch_all_sitemaps()
 
             # Should still get entries from successful sitemaps (5 different articles)
-            assert len(entries) == 5
+            assert len(entries[0]) == 5
 
     async def test_invalid_encyclopedia_ids_raises_error(self) -> None:
         """Test that invalid encyclopedia IDs raise ValueError."""

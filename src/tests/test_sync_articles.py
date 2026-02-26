@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from scripts.sync_articles import (
+    ArticleMetadata,
     categorize_articles,
+    fetch_and_categorize_articles,
     fetch_articles_batch,
     parse_encyclopedia_ids,
 )
@@ -65,7 +67,7 @@ class TestCategorizeArticles:
                 permalink="new-article",
             )
         ]
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {}
+        db_metadata: dict[int, ArticleMetadata] = {}
         encyclopedia_ids = None
 
         new_urls, modified_urls, deleted_ids, unchanged_count = categorize_articles(
@@ -87,8 +89,12 @@ class TestCategorizeArticles:
                 permalink="article",
             )
         ]
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("article", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc))
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(
+                permalink="article",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            )
         }
         encyclopedia_ids = None
 
@@ -112,8 +118,10 @@ class TestCategorizeArticles:
                 permalink="article",
             )
         ]
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("article", 15, timestamp)
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(
+                permalink="article", encyclopedia_id=15, changed_at=timestamp
+            )
         }
         encyclopedia_ids = None
 
@@ -129,8 +137,12 @@ class TestCategorizeArticles:
     def test_deleted_article(self) -> None:
         """Test that article in DB but not in sitemap is categorized as deleted."""
         sitemap_entries: list[SitemapEntry] = []
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("article", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc))
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(
+                permalink="article",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            )
         }
         encyclopedia_ids = None
 
@@ -146,9 +158,17 @@ class TestCategorizeArticles:
     def test_deleted_article_filtered_by_encyclopedia(self) -> None:
         """Test that deletion is filtered by encyclopedia_ids."""
         sitemap_entries: list[SitemapEntry] = []
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("article1", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)),
-            2: ("article2", 14, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)),
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(
+                permalink="article1",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            2: ArticleMetadata(
+                permalink="article2",
+                encyclopedia_id=14,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            ),
         }
         encyclopedia_ids = {15}  # Only syncing encyclopedia 15
 
@@ -169,8 +189,8 @@ class TestCategorizeArticles:
                 permalink="article",
             )
         ]
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("article", 15, None)
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(permalink="article", encyclopedia_id=15, changed_at=None)
         }
         encyclopedia_ids = None
 
@@ -205,10 +225,22 @@ class TestCategorizeArticles:
                 permalink="unchanged",
             ),
         ]
-        db_metadata: dict[int, tuple[str, int, datetime | None]] = {
-            1: ("modified", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)),
-            2: ("unchanged", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)),
-            3: ("deleted", 15, datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)),
+        db_metadata: dict[int, ArticleMetadata] = {
+            1: ArticleMetadata(
+                permalink="modified",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            2: ArticleMetadata(
+                permalink="unchanged",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            3: ArticleMetadata(
+                permalink="deleted",
+                encyclopedia_id=15,
+                changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+            ),
         }
         encyclopedia_ids = None
 
@@ -220,6 +252,165 @@ class TestCategorizeArticles:
         assert modified_urls == ["https://lex.dk/modified"]
         assert deleted_ids == [3]
         assert unchanged_count == 1
+
+
+class TestFetchAndCategorizeArticles:
+    """Tests for fetch_and_categorize_articles function."""
+
+    @pytest.mark.asyncio
+    async def test_deletions_skipped_when_sitemaps_incomplete(self) -> None:
+        """Test that deletions are skipped when not all sitemaps are fetched."""
+        sitemap_entries: list[SitemapEntry] = [
+            SitemapEntry(
+                url="https://lex.dk/article1",
+                lastmod=datetime(2026, 1, 9, 12, 0, 0, tzinfo=timezone.utc),
+                encyclopedia_id=15,
+                permalink="article1",
+            )
+        ]
+        # Only 5 out of 6 sitemaps fetched successfully
+        successful_sitemaps: set[int] = {1, 2, 3, 4, 5}
+
+        with patch(
+            "scripts.sync_articles.fetch_all_sitemaps", new_callable=AsyncMock
+        ) as mock_fetch_sitemaps:
+            mock_fetch_sitemaps.return_value = (sitemap_entries, successful_sitemaps)
+
+            with patch(
+                "scripts.sync_articles.fetch_article_metadata"
+            ) as mock_fetch_metadata:
+                # Article in DB but not in sitemap - would normally be deleted
+                mock_fetch_metadata.return_value = {
+                    1: ArticleMetadata(
+                        permalink="article1",
+                        encyclopedia_id=15,
+                        changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    2: ArticleMetadata(
+                        permalink="deleted-article",
+                        encyclopedia_id=15,
+                        changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+                    ),
+                }
+
+                with patch("scripts.sync_articles.get_settings") as mock_settings:
+                    mock_settings.return_value.SITEMAP_COUNT = 6
+
+                    result = await fetch_and_categorize_articles(None)
+
+                    assert result is not None
+                    assert result.skip_deletions is True
+                    assert result.deleted_ids == []  # Deletions should be empty
+                    assert result.successful_sitemaps == successful_sitemaps
+
+    @pytest.mark.asyncio
+    async def test_deletions_not_skipped_when_all_sitemaps_fetched(self) -> None:
+        """Test that deletions are processed when all sitemaps are fetched."""
+        sitemap_entries: list[SitemapEntry] = [
+            SitemapEntry(
+                url="https://lex.dk/article1",
+                lastmod=datetime(2026, 1, 9, 12, 0, 0, tzinfo=timezone.utc),
+                encyclopedia_id=15,
+                permalink="article1",
+            )
+        ]
+        # All 6 sitemaps fetched successfully
+        successful_sitemaps: set[int] = {1, 2, 3, 4, 5, 6}
+
+        with patch(
+            "scripts.sync_articles.fetch_all_sitemaps", new_callable=AsyncMock
+        ) as mock_fetch_sitemaps:
+            mock_fetch_sitemaps.return_value = (sitemap_entries, successful_sitemaps)
+
+            with patch(
+                "scripts.sync_articles.fetch_article_metadata"
+            ) as mock_fetch_metadata:
+                # Article in DB but not in sitemap - should be marked for deletion
+                mock_fetch_metadata.return_value = {
+                    1: ArticleMetadata(
+                        permalink="article1",
+                        encyclopedia_id=15,
+                        changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    2: ArticleMetadata(
+                        permalink="deleted-article",
+                        encyclopedia_id=15,
+                        changed_at=datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc),
+                    ),
+                }
+
+                with patch("scripts.sync_articles.get_settings") as mock_settings:
+                    mock_settings.return_value.SITEMAP_COUNT = 6
+
+                    result = await fetch_and_categorize_articles(None)
+
+                    assert result is not None
+                    assert result.skip_deletions is False
+                    assert result.deleted_ids == [
+                        2
+                    ]  # Should include the deleted article
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_sitemap_fetch_failure(self) -> None:
+        """Test that None is returned when sitemap fetching fails completely."""
+        with patch(
+            "scripts.sync_articles.fetch_all_sitemaps", new_callable=AsyncMock
+        ) as mock_fetch_sitemaps:
+            mock_fetch_sitemaps.side_effect = Exception("Network error")
+
+            result = await fetch_and_categorize_articles(None)
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_metadata_fetch_failure(self) -> None:
+        """Test that None is returned when database metadata fetching fails."""
+        sitemap_entries: list[SitemapEntry] = [
+            SitemapEntry(
+                url="https://lex.dk/article1",
+                lastmod=datetime(2026, 1, 9, 12, 0, 0, tzinfo=timezone.utc),
+                encyclopedia_id=15,
+                permalink="article1",
+            )
+        ]
+
+        with patch(
+            "scripts.sync_articles.fetch_all_sitemaps", new_callable=AsyncMock
+        ) as mock_fetch_sitemaps:
+            mock_fetch_sitemaps.return_value = (sitemap_entries, {1, 2, 3, 4, 5, 6})
+
+            with patch(
+                "scripts.sync_articles.fetch_article_metadata"
+            ) as mock_fetch_metadata:
+                mock_fetch_metadata.side_effect = Exception("Database error")
+
+                result = await fetch_and_categorize_articles(None)
+
+                assert result is None
+
+    @pytest.mark.asyncio
+    async def test_uses_custom_encyclopedia_ids(self) -> None:
+        """Test that custom encyclopedia IDs are passed to fetch_all_sitemaps."""
+        sitemap_entries: list[SitemapEntry] = []
+        successful_sitemaps: set[int] = {1, 2, 3, 4, 5, 6}
+
+        with patch(
+            "scripts.sync_articles.fetch_all_sitemaps", new_callable=AsyncMock
+        ) as mock_fetch_sitemaps:
+            mock_fetch_sitemaps.return_value = (sitemap_entries, successful_sitemaps)
+
+            with patch(
+                "scripts.sync_articles.fetch_article_metadata"
+            ) as mock_fetch_metadata:
+                mock_fetch_metadata.return_value = {}
+
+                with patch("scripts.sync_articles.get_settings") as mock_settings:
+                    mock_settings.return_value.SITEMAP_COUNT = 6
+
+                    await fetch_and_categorize_articles({14, 15})
+
+                    # Verify custom encyclopedia IDs were passed
+                    mock_fetch_sitemaps.assert_called_once_with({14, 15})
 
 
 class TestFetchArticlesBatch:

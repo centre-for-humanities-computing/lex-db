@@ -2,9 +2,10 @@
 
 import argparse
 import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from lex_db.config import get_settings
+from lex_db.config import get_settings, VALID_ENCYCLOPEDIA_IDS
 from lex_db.database import (
     get_db_connection,
     upsert_article,
@@ -18,6 +19,79 @@ from lex_db.embeddings import EmbeddingModel
 logger = get_logger()
 
 
+@dataclass
+class ArticleMetadata:
+    """Metadata for a single article from the database."""
+
+    permalink: str
+    encyclopedia_id: int
+    changed_at: datetime | None
+
+
+@dataclass
+class VectorIndexStats:
+    """Statistics for a single vector index update."""
+
+    created: int = 0
+    deleted: int = 0
+    errors: int = 0
+    error_message: str | None = None
+
+    def is_error(self) -> bool:
+        """Check if this represents an error state."""
+        return self.error_message is not None
+
+
+@dataclass
+class CategorizedArticles:
+    """Results of fetching and categorizing articles from sitemaps and database."""
+
+    # Raw data
+    sitemap_entries: list[SitemapEntry]
+    db_metadata: dict[int, ArticleMetadata]
+    new_urls: list[str]
+    modified_urls: list[str]
+    deleted_ids: list[int]
+
+    # Metadata
+    successful_sitemaps: set[int]
+    total_sitemaps: int
+    unchanged_article_count: int
+    skip_deletions: bool = False
+
+
+@dataclass
+class SyncStats:
+    """Statistics for article synchronization."""
+
+    # Sitemap stats
+    sitemap_entries_count: int = 0
+    successful_sitemaps: int = 0
+    total_sitemaps: int = 0
+
+    # Article categorization
+    new_count: int = 0
+    modified_count: int = 0
+    unchanged_count: int = 0
+    deleted_count: int = 0
+
+    # Fetch stats
+    fetch_attempted: int = 0
+    fetch_successful: int = 0
+
+    # Database operations
+    upsert_success: int = 0
+    upsert_failure: int = 0
+    articles_deleted: int = 0
+
+    # Vector index stats
+    vector_stats: dict[str, VectorIndexStats] = field(default_factory=dict)
+
+    # Metadata
+    db_articles_before: int = 0
+    deletions_skipped: bool = False
+
+
 def parse_encyclopedia_ids(ids_str: str | None) -> set[int] | None:
     """Parse comma-separated encyclopedia IDs into a set."""
     if not ids_str:
@@ -25,8 +99,7 @@ def parse_encyclopedia_ids(ids_str: str | None) -> set[int] | None:
 
     try:
         ids = {int(id_str.strip()) for id_str in ids_str.split(",")}
-        valid_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
-        invalid = ids - valid_ids
+        invalid = ids - VALID_ENCYCLOPEDIA_IDS
         if invalid:
             raise ValueError(f"Invalid encyclopedia IDs: {invalid}")
         return ids
@@ -34,12 +107,12 @@ def parse_encyclopedia_ids(ids_str: str | None) -> set[int] | None:
         raise ValueError(f"Failed to parse encyclopedia IDs: {e}")
 
 
-def fetch_article_metadata() -> dict[int, tuple[str, int, datetime | None]]:
+def fetch_article_metadata() -> dict[int, ArticleMetadata]:
     """
     Fetch article metadata from database.
 
     Returns:
-        Dict mapping article_id to (permalink, encyclopedia_id, changed_at)
+        Dict mapping article_id to ArticleMetadata
     """
     with get_db_connection() as conn:
         rows = conn.execute(
@@ -47,14 +120,19 @@ def fetch_article_metadata() -> dict[int, tuple[str, int, datetime | None]]:
         ).fetchall()
 
         return {
-            row["id"]: (row["permalink"], row["encyclopedia_id"], row["changed_at"])  # type: ignore[call-overload]
+            row["id"]:  # type: ignore[call-overload]
+            ArticleMetadata(
+                permalink=row["permalink"],  # type: ignore[call-overload]
+                encyclopedia_id=row["encyclopedia_id"],  # type: ignore[call-overload]
+                changed_at=row["changed_at"],  # type: ignore[call-overload]
+            )
             for row in rows
         }
 
 
 def categorize_articles(
     sitemap_entries: list[SitemapEntry],
-    db_metadata: dict[int, tuple[str, int, datetime | None]],
+    db_metadata: dict[int, ArticleMetadata],
     encyclopedia_ids: set[int] | None,
 ) -> tuple[list[str], list[str], list[int], int]:
     """
@@ -62,7 +140,7 @@ def categorize_articles(
 
     Args:
         sitemap_entries: List of entries from sitemaps
-        db_metadata: Dict mapping article_id to (permalink, encyclopedia_id, changed_at)
+        db_metadata: Dict mapping article_id to ArticleMetadata
         encyclopedia_ids: Set of encyclopedia IDs being synced (for deletion filtering)
 
     Returns:
@@ -70,8 +148,8 @@ def categorize_articles(
     """
     # Build lookup: (encyclopedia_id, permalink) -> (article_id, changed_at)
     db_lookup = {
-        (enc_id, permalink): (article_id, changed_at)
-        for article_id, (permalink, enc_id, changed_at) in db_metadata.items()
+        (meta.encyclopedia_id, meta.permalink): (article_id, meta.changed_at)
+        for article_id, meta in db_metadata.items()
     }
 
     # Build lookup: (encyclopedia_id, permalink) -> sitemap_entry
@@ -140,7 +218,7 @@ async def fetch_articles_batch(urls: list[str], max_concurrent: int = 10) -> lis
                     # Check if it's a 429 rate limit error
                     if "429" in error_msg or "Too Many Requests" in error_msg:
                         if attempt < max_retries - 1:
-                            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                            # Exponential backoff: 5s, 10s, 20s, 40s, 80s, 160s, 320s
                             delay = base_delay * (2**attempt)
                             logger.warning(
                                 f"Rate limit hit for {url}, retrying in {delay}s "
@@ -165,47 +243,45 @@ async def fetch_articles_batch(urls: list[str], max_concurrent: int = 10) -> lis
     return [article for article in results if article is not None]
 
 
-async def sync_articles_async(
-    dry_run: bool,
-    batch_size: int,
+async def fetch_and_categorize_articles(
     encyclopedia_ids: set[int] | None,
-) -> int:
+) -> CategorizedArticles | None:
     """
-    Main async workflow for article synchronization.
+    Fetch sitemaps and database metadata, then categorize articles.
 
     Returns:
-        Exit code (0 for success, 1 for failure)
+        CategorizedArticles with all categorization results,
+        or None if a critical error occurred.
     """
     settings = get_settings()
 
-    logger.info("Starting article synchronization")
-    logger.info(f"Dry run: {dry_run}")
-    logger.info(f"Batch size: {batch_size}")
-    logger.info(f"Encyclopedia IDs: {encyclopedia_ids or 'all'}")
-
-    # Step 1: Fetch sitemaps
+    # Fetch sitemaps
     logger.info("Fetching sitemaps...")
     try:
         if encyclopedia_ids:
-            sitemap_entries = await fetch_all_sitemaps(encyclopedia_ids)
+            sitemap_entries, successful_sitemaps = await fetch_all_sitemaps(
+                encyclopedia_ids
+            )
         else:
-            # Default to all encyclopedias
-            sitemap_entries = await fetch_all_sitemaps(
-                {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
+            sitemap_entries, successful_sitemaps = await fetch_all_sitemaps(
+                set(VALID_ENCYCLOPEDIA_IDS)
             )
     except Exception as e:
         logger.error(f"Failed to fetch sitemaps: {e}", exc_info=True)
-        return 1
+        return None
 
     logger.info(f"Fetched {len(sitemap_entries)} articles from sitemaps")
+    logger.info(
+        f"Successfully fetched {len(successful_sitemaps)}/{settings.SITEMAP_COUNT} sitemaps"
+    )
 
-    # Step 2: Compare with database
+    # Fetch database metadata
     logger.info("Fetching article metadata from database...")
     try:
         db_metadata = fetch_article_metadata()
     except Exception as e:
         logger.error(f"Failed to fetch database metadata: {e}", exc_info=True)
-        return 1
+        return None
 
     logger.info(f"Found {len(db_metadata)} articles in database")
 
@@ -214,126 +290,199 @@ async def sync_articles_async(
         sitemap_entries, db_metadata, encyclopedia_ids
     )
 
+    # If not all sitemaps were fetched successfully, skip deletions to avoid data loss
+    deletions_skipped = len(successful_sitemaps) != settings.SITEMAP_COUNT
+    if deletions_skipped:
+        logger.warning(
+            f"Only {len(successful_sitemaps)}/{settings.SITEMAP_COUNT} sitemaps fetched successfully. "
+            "Skipping deletions to avoid incorrect removal of articles."
+        )
+        deleted_ids = []
+
     logger.info("Categorized articles:")
     logger.info(f"  New: {len(new_urls)}")
     logger.info(f"  Modified: {len(modified_urls)}")
     logger.info(f"  Unchanged: {unchanged_count}")
     logger.info(f"  Deleted: {len(deleted_ids)}")
 
-    # Step 3: Fetch article JSON
-    urls_to_fetch = new_urls + modified_urls
-    fetched_articles = []
+    return CategorizedArticles(
+        sitemap_entries=sitemap_entries,
+        db_metadata=db_metadata,
+        new_urls=new_urls,
+        modified_urls=modified_urls,
+        deleted_ids=deleted_ids,
+        successful_sitemaps=successful_sitemaps,
+        total_sitemaps=settings.SITEMAP_COUNT,
+        unchanged_article_count=unchanged_count,
+        skip_deletions=deletions_skipped,
+    )
 
-    if urls_to_fetch:
-        logger.info(f"Fetching {len(urls_to_fetch)} articles...")
-        logger.info(f"Rate limit: {settings.SITEMAP_RATE_LIMIT} concurrent requests")
 
-        for i in range(0, len(urls_to_fetch), batch_size):
-            batch = urls_to_fetch[i : i + batch_size]
-            logger.info(
-                f"Fetching batch {i // batch_size + 1} ({len(batch)} articles)..."
-            )
+async def fetch_article_content(
+    urls_to_fetch: list[str],
+    batch_size: int,
+) -> list[dict]:
+    """
+    Fetch article JSON content for the given URLs.
 
-            batch_articles = await fetch_articles_batch(
-                batch, max_concurrent=settings.SITEMAP_RATE_LIMIT
-            )
-            fetched_articles.extend(batch_articles)
+    Returns:
+        List of successfully fetched article data dictionaries.
+    """
+    settings = get_settings()
+    fetched_articles: list[dict] = []
 
-            logger.info(
-                f"Successfully fetched {len(batch_articles)}/{len(batch)} articles in batch"
-            )
+    if not urls_to_fetch:
+        return fetched_articles
+
+    logger.info(f"Fetching {len(urls_to_fetch)} articles...")
+    logger.info(f"Rate limit: {settings.SITEMAP_RATE_LIMIT} concurrent requests")
+
+    for i in range(0, len(urls_to_fetch), batch_size):
+        batch = urls_to_fetch[i : i + batch_size]
+        logger.info(f"Fetching batch {i // batch_size + 1} ({len(batch)} articles)...")
+
+        batch_articles = await fetch_articles_batch(
+            batch, max_concurrent=settings.SITEMAP_RATE_LIMIT
+        )
+        fetched_articles.extend(batch_articles)
 
         logger.info(
-            f"Total fetched: {len(fetched_articles)}/{len(urls_to_fetch)} articles"
+            f"Successfully fetched {len(batch_articles)}/{len(batch)} articles in batch"
         )
 
-    # Step 4: Batch upsert articles
-    upsert_success_count = 0
-    upsert_failure_count = 0
+    logger.info(f"Total fetched: {len(fetched_articles)}/{len(urls_to_fetch)} articles")
+    return fetched_articles
 
-    if fetched_articles:
-        if dry_run:
-            logger.info(f"DRY RUN: Would upsert {len(fetched_articles)} articles")
-            upsert_success_count = len(fetched_articles)
+
+def upsert_articles_to_db(
+    articles: list[dict],
+    dry_run: bool,
+) -> tuple[int, int]:
+    """
+    Upsert articles to the database.
+
+    Returns:
+        Tuple of (success_count, failure_count)
+    """
+    if not articles:
+        return 0, 0
+
+    if dry_run:
+        logger.info(f"DRY RUN: Would upsert {len(articles)} articles")
+        return len(articles), 0
+
+    logger.info(f"Upserting {len(articles)} articles...")
+    success_count = 0
+    failure_count = 0
+
+    for article in articles:
+        if upsert_article(article):
+            success_count += 1
         else:
-            logger.info(f"Upserting {len(fetched_articles)} articles...")
+            failure_count += 1
 
-            for article in fetched_articles:
-                if upsert_article(article):
-                    upsert_success_count += 1
-                else:
-                    upsert_failure_count += 1
+    logger.info(f"Upserted {success_count} articles successfully")
+    if failure_count > 0:
+        logger.warning(f"Failed to upsert {failure_count} articles")
 
-            logger.info(f"Upserted {upsert_success_count} articles successfully")
-            if upsert_failure_count > 0:
-                logger.warning(f"Failed to upsert {upsert_failure_count} articles")
+    return success_count, failure_count
 
-    # Step 5: Delete missing articles
-    deleted_count = 0
 
-    if deleted_ids:
-        if dry_run:
-            logger.info(f"DRY RUN: Would delete {len(deleted_ids)} articles")
-            deleted_count = len(deleted_ids)
-        else:
-            logger.info(
-                f"Deleting {len(deleted_ids)} articles no longer in sitemaps..."
-            )
-            deleted_count = delete_articles(deleted_ids)
-            logger.info(f"Deleted {deleted_count} articles")
+def delete_missing_articles_from_db(
+    deleted_ids: list[int],
+    dry_run: bool,
+) -> int:
+    """
+    Delete articles that are no longer in sitemaps.
 
-    # Step 6: Update vector indexes
-    vector_stats: dict[str, dict] = {}
+    Returns:
+        Number of articles deleted.
+    """
+    if not deleted_ids:
+        return 0
 
-    if upsert_success_count > 0 or deleted_count > 0:
-        if dry_run:
-            logger.info("DRY RUN: Would update vector indexes")
-        else:
-            logger.info("Updating vector indexes...")
+    if dry_run:
+        logger.info(f"DRY RUN: Would delete {len(deleted_ids)} articles")
+        return len(deleted_ids)
 
-            with get_db_connection() as conn:
-                all_indexes = get_all_vector_index_metadata(conn)
+    logger.info(f"Deleting {len(deleted_ids)} articles no longer in sitemaps...")
+    deleted_count = delete_articles(deleted_ids)
+    logger.info(f"Deleted {deleted_count} articles")
+    return deleted_count
 
-                if not all_indexes:
-                    logger.info("No vector indexes found, skipping update")
-                else:
-                    logger.info(f"Found {len(all_indexes)} vector index(es) to update")
 
-                    for index_meta in all_indexes:
-                        index_name = index_meta["index_name"]
-                        logger.info(f"Updating vector index: {index_name}")
+def update_all_vector_indexes(
+    batch_size: int,
+    dry_run: bool,
+) -> dict[str, VectorIndexStats]:
+    """
+    Update all vector indexes.
 
-                        try:
-                            stats = update_vector_index(
-                                db_conn=conn,
-                                vector_index_name=index_name,
-                                source_table=index_meta["source_table"],
-                                text_column=index_meta["source_column"],
-                                embedding_model_choice=EmbeddingModel(
-                                    index_meta["embedding_model"]
-                                ),
-                                updated_at_column=index_meta.get(
-                                    "updated_at_column", "changed_at"
-                                ),
-                                chunk_size=int(index_meta["chunk_size"]),
-                                chunk_overlap=int(index_meta["chunk_overlap"]),
-                                chunking_strategy=index_meta["chunking_strategy"],
-                                batch_size=batch_size,
-                            )
-                            vector_stats[index_name] = stats
-                            logger.info(
-                                f"Updated {index_name}: "
-                                f"{stats['created']} created, {stats['deleted']} deleted, "
-                                f"{stats['errors']} errors"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to update vector index {index_name}: {e}",
-                                exc_info=True,
-                            )
-                            vector_stats[index_name] = {"error": str(e)}
+    Returns:
+        Dictionary mapping index name to stats.
+    """
+    if dry_run:
+        logger.info("DRY RUN: Would update vector indexes")
+        return {}
 
-    # Step 7: Log summary statistics
+    logger.info("Updating vector indexes...")
+    vector_stats: dict[str, VectorIndexStats] = {}
+
+    with get_db_connection() as conn:
+        all_indexes = get_all_vector_index_metadata(conn)
+
+        if not all_indexes:
+            logger.info("No vector indexes found, skipping update")
+            return vector_stats
+
+        logger.info(f"Found {len(all_indexes)} vector index(es) to update")
+
+        for index_meta in all_indexes:
+            index_name = index_meta["index_name"]
+            logger.info(f"Updating vector index: {index_name}")
+
+            try:
+                stats = update_vector_index(
+                    db_conn=conn,
+                    vector_index_name=index_name,
+                    source_table=index_meta["source_table"],
+                    text_column=index_meta["source_column"],
+                    embedding_model_choice=EmbeddingModel(
+                        index_meta["embedding_model"]
+                    ),
+                    updated_at_column=index_meta.get("updated_at_column", "changed_at"),
+                    chunk_size=int(index_meta["chunk_size"]),
+                    chunk_overlap=int(index_meta["chunk_overlap"]),
+                    chunking_strategy=index_meta["chunking_strategy"],
+                    batch_size=batch_size,
+                )
+                vector_stats[index_name] = VectorIndexStats(
+                    created=stats["created"],
+                    deleted=stats["deleted"],
+                    errors=stats["errors"],
+                )
+                logger.info(
+                    f"Updated {index_name}: "
+                    f"{stats['created']} created, {stats['deleted']} deleted, "
+                    f"{stats['errors']} errors"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to update vector index {index_name}: {e}",
+                    exc_info=True,
+                )
+                vector_stats[index_name] = VectorIndexStats(error_message=str(e))
+
+    return vector_stats
+
+
+def log_sync_summary(
+    stats: SyncStats,
+    dry_run: bool,
+    encyclopedia_ids: set[int] | None,
+    batch_size: int,
+) -> None:
+    """Log a summary of the synchronization."""
     logger.info("=" * 60)
     logger.info("SYNCHRONIZATION SUMMARY")
     logger.info("=" * 60)
@@ -342,38 +491,98 @@ async def sync_articles_async(
     logger.info(f"Batch size: {batch_size}")
     logger.info("")
     logger.info("Articles:")
-    logger.info(f"  Total in sitemaps: {len(sitemap_entries)}")
-    logger.info(f"  Total in database (before sync): {len(db_metadata)}")
-    logger.info(f"  New: {len(new_urls)}")
-    logger.info(f"  Modified: {len(modified_urls)}")
-    logger.info(f"  Unchanged: {unchanged_count}")
-    logger.info(f"  Deleted: {deleted_count}")
+    logger.info(f"  Total in sitemaps: {stats.sitemap_entries_count}")
+    logger.info(f"  Total in database (before sync): {stats.db_articles_before}")
+    logger.info(f"  New: {stats.new_count}")
+    logger.info(f"  Modified: {stats.modified_count}")
+    logger.info(f"  Unchanged: {stats.unchanged_count}")
+    logger.info(f"  Deleted: {stats.articles_deleted}")
+    if stats.deletions_skipped:
+        logger.info(
+            f"  Note: Deletions skipped due to incomplete sitemap fetching "
+            f"({stats.successful_sitemaps}/{stats.total_sitemaps} sitemaps successful)"
+        )
     logger.info("")
     logger.info("Fetch results:")
-    logger.info(f"  Attempted: {len(urls_to_fetch)}")
-    logger.info(f"  Successful: {len(fetched_articles)}")
-    logger.info(f"  Failed: {len(urls_to_fetch) - len(fetched_articles)}")
+    logger.info(f"  Attempted: {stats.fetch_attempted}")
+    logger.info(f"  Successful: {stats.fetch_successful}")
+    logger.info(f"  Failed: {stats.fetch_attempted - stats.fetch_successful}")
     logger.info("")
     logger.info("Database operations:")
-    logger.info(f"  Upserts successful: {upsert_success_count}")
-    logger.info(f"  Upserts failed: {upsert_failure_count}")
-    logger.info(f"  Articles deleted: {deleted_count}")
+    logger.info(f"  Upserts successful: {stats.upsert_success}")
+    logger.info(f"  Upserts failed: {stats.upsert_failure}")
+    logger.info(f"  Articles deleted: {stats.articles_deleted}")
 
-    if vector_stats:
+    if stats.vector_stats:
         logger.info("")
         logger.info("Vector index updates:")
-        for index_name, stats in vector_stats.items():
-            if "error" in stats:
-                logger.info(f"  {index_name}: ERROR - {stats['error']}")
+        for index_name, index_stats in stats.vector_stats.items():
+            if index_stats.is_error():
+                logger.info(f"  {index_name}: ERROR - {index_stats.error_message}")
             else:
                 logger.info(
-                    f"  {index_name}: {stats['created']} created, "
-                    f"{stats['deleted']} deleted, {stats['errors']} errors"
+                    f"  {index_name}: {index_stats.created} created, "
+                    f"{index_stats.deleted} deleted, {index_stats.errors} errors"
                 )
 
     logger.info("=" * 60)
     logger.info("Article synchronization completed successfully")
-    return 0
+
+
+async def sync_articles_async(
+    dry_run: bool,
+    batch_size: int,
+    encyclopedia_ids: set[int] | None,
+) -> None:
+    """
+    Main async workflow for article synchronization.
+    """
+
+    logger.info("Starting article synchronization")
+    logger.info(f"Dry run: {dry_run}")
+    logger.info(f"Batch size: {batch_size}")
+    logger.info(f"Encyclopedia IDs: {encyclopedia_ids or 'all'}")
+
+    # Step 1-2: Fetch and categorize articles
+    categorized = await fetch_and_categorize_articles(encyclopedia_ids)
+    if categorized is None:
+        raise RuntimeError("Failed to fetch and categorize articles")
+
+    # Initialize stats
+    stats = SyncStats(
+        sitemap_entries_count=len(categorized.sitemap_entries),
+        successful_sitemaps=len(categorized.successful_sitemaps),
+        total_sitemaps=categorized.total_sitemaps,
+        new_count=len(categorized.new_urls),
+        modified_count=len(categorized.modified_urls),
+        unchanged_count=categorized.unchanged_article_count,
+        db_articles_before=len(categorized.db_metadata),
+        deletions_skipped=categorized.skip_deletions,
+    )
+
+    # Step 3: Fetch article JSON
+    urls_to_fetch = categorized.new_urls + categorized.modified_urls
+    stats.fetch_attempted = len(urls_to_fetch)
+
+    fetched_articles = await fetch_article_content(urls_to_fetch, batch_size)
+    stats.fetch_successful = len(fetched_articles)
+
+    # Step 4: Upsert articles
+    stats.upsert_success, stats.upsert_failure = upsert_articles_to_db(
+        fetched_articles, dry_run
+    )
+
+    # Step 5: Delete missing articles
+    stats.articles_deleted = delete_missing_articles_from_db(
+        categorized.deleted_ids, dry_run
+    )
+
+    # Step 6: Update vector indexes
+    if stats.upsert_success > 0 or stats.articles_deleted > 0:
+        stats.vector_stats = update_all_vector_indexes(batch_size, dry_run)
+
+    # Step 7: Log summary
+    log_sync_summary(stats, dry_run, encyclopedia_ids, batch_size)
 
 
 def main() -> None:
@@ -408,14 +617,13 @@ def main() -> None:
 
     try:
         encyclopedia_ids = parse_encyclopedia_ids(args.encyclopedia_ids)
-        exit_code = asyncio.run(
+        asyncio.run(
             sync_articles_async(
                 dry_run=args.dry_run,
                 batch_size=args.batch_size,
                 encyclopedia_ids=encyclopedia_ids,
             )
         )
-        exit(exit_code)
     except ValueError as e:
         logger.error(f"Invalid arguments: {e}")
         exit(1)

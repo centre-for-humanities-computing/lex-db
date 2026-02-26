@@ -29,14 +29,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     pool.close()
     print("✓ Database connection pool closed")
 
-    # Close connection pool on shutdown
-    pool.close()
-    print("✓ Database connection pool closed")
-
-    # Close connection pool on shutdown
-    pool.close()
-    print("✓ Database connection pool closed")
-
 
 app = FastAPI(
     title=settings.APP_NAME,

@@ -8,7 +8,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from lex_db.config import get_settings
+from lex_db.config import get_settings, VALID_ENCYCLOPEDIA_IDS
 from lex_db.utils import get_logger
 
 logger = get_logger()
@@ -104,9 +104,6 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
     """
     entries: list[SitemapEntry] = []
 
-    # Valid encyclopedia IDs (exclude invalid domains)
-    valid_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
-
     try:
         root = ET.fromstring(xml_content)
 
@@ -135,7 +132,7 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
                 encyclopedia_id = derive_encyclopedia_id(url)
 
                 # Skip invalid encyclopedia IDs (e.g., brugere.lex.dk)
-                if encyclopedia_id not in valid_ids:
+                if encyclopedia_id not in VALID_ENCYCLOPEDIA_IDS:
                     logger.debug(
                         f"Skipping entry with invalid encyclopedia ID {encyclopedia_id}: {url}"
                     )
@@ -223,7 +220,7 @@ async def fetch_article_json(url: str) -> dict:
 
 async def fetch_all_sitemaps(
     encyclopedia_ids: set[int] = {14, 15, 18, 19, 20},
-) -> list[SitemapEntry]:
+) -> tuple[list[SitemapEntry], set[int]]:
     """
     Fetch and parse all sitemaps from lex.dk.
 
@@ -231,7 +228,7 @@ async def fetch_all_sitemaps(
         encyclopedia_ids: Set of encyclopedia IDs to filter by.
 
     Returns:
-        List of SitemapEntry objects
+        Tuple of (list of SitemapEntry objects, set of successfully fetched sitemap indices 1-6)
 
     Raises:
         ValueError: If invalid encyclopedia_ids provided
@@ -239,29 +236,34 @@ async def fetch_all_sitemaps(
     settings = get_settings()
 
     # Validate encyclopedia_ids
-    valid_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
-    invalid_ids = encyclopedia_ids - valid_ids
+    invalid_ids = encyclopedia_ids - VALID_ENCYCLOPEDIA_IDS
     if invalid_ids:
         raise ValueError(f"Invalid encyclopedia IDs: {invalid_ids}")
 
-    # Fetch all 6 sitemaps concurrently
-    sitemap_urls = [f"{settings.SITEMAP_BASE_URL}/sitemap{i}.xml" for i in range(1, 7)]
+    # Fetch all sitemaps concurrently
+    sitemap_urls = [
+        f"{settings.SITEMAP_BASE_URL}/sitemap{i}.xml"
+        for i in range(1, settings.SITEMAP_COUNT + 1)
+    ]
 
-    async def fetch_and_parse(url: str) -> list[SitemapEntry]:
+    async def fetch_and_parse(url: str) -> tuple[list[SitemapEntry], bool]:
         try:
             xml_content = await fetch_sitemap(url)
-            return parse_sitemap(xml_content)
+            return parse_sitemap(xml_content), True
         except Exception as e:
             logger.error(f"Failed to process sitemap {url}: {e}")
-            return []  # Continue with other sitemaps
+            return [], False
 
     tasks = [fetch_and_parse(url) for url in sitemap_urls]
     results = await asyncio.gather(*tasks)
 
-    # Flatten results
+    # Flatten results and track successful fetches
     all_entries: list[SitemapEntry] = []
-    for entries in results:
+    successful_sitemaps = set()
+    for i, (entries, success) in enumerate(results, start=1):
         all_entries.extend(entries)
+        if success:
+            successful_sitemaps.add(i)
 
     # Filter by encyclopedia_ids
     all_entries = [
@@ -281,7 +283,7 @@ async def fetch_all_sitemaps(
     deduplicated_entries = list(url_to_entry.values())
 
     logger.info(
-        f"Fetched {len(deduplicated_entries)} unique entries from {len(sitemap_urls)} sitemaps"
+        f"Fetched {len(deduplicated_entries)} unique entries from {len(successful_sitemaps)}/{len(sitemap_urls)} sitemaps"
     )
 
-    return deduplicated_entries
+    return deduplicated_entries, successful_sitemaps

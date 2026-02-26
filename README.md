@@ -174,6 +174,26 @@ This will:
 - Generate and add new embeddings
 - Update metadata timestamps
 
+### Synchronizing Articles from lex.dk
+
+The `sync_articles.py` script synchronizes articles from lex.dk sitemaps to the database:
+
+```bash
+# Sync all encyclopedias
+uv run python -m scripts.sync_articles
+
+# Dry run to see what would change
+uv run python -m scripts.sync_articles --dry-run
+
+# Sync specific encyclopedias only
+uv run python -m scripts.sync_articles --encyclopedia-ids 14,15,18
+```
+
+**Important behaviors:**
+- Deletions are skipped if not all sitemaps are fetched successfully (prevents accidental data loss)
+- Vector indexes are automatically updated after article changes
+- Use `--dry-run` to preview changes without modifying the database
+
 ### Running the API Server
 Start the FastAPI server:
 ```bash

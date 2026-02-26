@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Load environment variables from .env file
 load_dotenv()
 
+# Valid encyclopedia IDs (1-20, excluding 13 which is not used)
+VALID_ENCYCLOPEDIA_IDS: frozenset[int] = frozenset(
+    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20}
+)
+
 
 class Settings(BaseSettings):
     """Application settings."""
@@ -31,6 +36,9 @@ class Settings(BaseSettings):
     SITEMAP_REQUEST_TIMEOUT: int = 30
     SITEMAP_MAX_RETRIES: int = 3
     SITEMAP_RATE_LIMIT: int = 10  # Max concurrent JSON requests
+    SITEMAP_COUNT: int = (
+        6  # Number of sitemap files (sitemap1.xml through sitemap6.xml)
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
