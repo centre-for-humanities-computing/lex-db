@@ -481,6 +481,7 @@ def log_sync_summary(
     dry_run: bool,
     encyclopedia_ids: set[int] | None,
     batch_size: int,
+    skip_scraping: bool,
 ) -> None:
     """Log a summary of the synchronization."""
     logger.info("=" * 60)
@@ -490,28 +491,33 @@ def log_sync_summary(
     logger.info(f"Encyclopedia IDs: {encyclopedia_ids or 'all'}")
     logger.info(f"Batch size: {batch_size}")
     logger.info("")
-    logger.info("Articles:")
-    logger.info(f"  Total in sitemaps: {stats.sitemap_entries_count}")
-    logger.info(f"  Total in database (before sync): {stats.db_articles_before}")
-    logger.info(f"  New: {stats.new_count}")
-    logger.info(f"  Modified: {stats.modified_count}")
-    logger.info(f"  Unchanged: {stats.unchanged_count}")
-    logger.info(f"  Deleted: {stats.articles_deleted}")
-    if stats.deletions_skipped:
-        logger.info(
-            f"  Note: Deletions skipped due to incomplete sitemap fetching "
-            f"({stats.successful_sitemaps}/{stats.total_sitemaps} sitemaps successful)"
-        )
-    logger.info("")
-    logger.info("Fetch results:")
-    logger.info(f"  Attempted: {stats.fetch_attempted}")
-    logger.info(f"  Successful: {stats.fetch_successful}")
-    logger.info(f"  Failed: {stats.fetch_attempted - stats.fetch_successful}")
-    logger.info("")
-    logger.info("Database operations:")
-    logger.info(f"  Upserts successful: {stats.upsert_success}")
-    logger.info(f"  Upserts failed: {stats.upsert_failure}")
-    logger.info(f"  Articles deleted: {stats.articles_deleted}")
+
+    if skip_scraping:
+        logger.info("Article fetching skipped")
+    else:
+        logger.info("Article fetching performed")
+        logger.info("Articles:")
+        logger.info(f"  Total in sitemaps: {stats.sitemap_entries_count}")
+        logger.info(f"  Total in database (before sync): {stats.db_articles_before}")
+        logger.info(f"  New: {stats.new_count}")
+        logger.info(f"  Modified: {stats.modified_count}")
+        logger.info(f"  Unchanged: {stats.unchanged_count}")
+        logger.info(f"  Deleted: {stats.articles_deleted}")
+        if stats.deletions_skipped:
+            logger.info(
+                f"  Note: Deletions skipped due to incomplete sitemap fetching "
+                f"({stats.successful_sitemaps}/{stats.total_sitemaps} sitemaps successful)"
+            )
+        logger.info("")
+        logger.info("Fetch results:")
+        logger.info(f"  Attempted: {stats.fetch_attempted}")
+        logger.info(f"  Successful: {stats.fetch_successful}")
+        logger.info(f"  Failed: {stats.fetch_attempted - stats.fetch_successful}")
+        logger.info("")
+        logger.info("Database operations:")
+        logger.info(f"  Upserts successful: {stats.upsert_success}")
+        logger.info(f"  Upserts failed: {stats.upsert_failure}")
+        logger.info(f"  Articles deleted: {stats.articles_deleted}")
 
     if stats.vector_stats:
         logger.info("")
@@ -533,6 +539,8 @@ async def sync_articles_async(
     dry_run: bool,
     batch_size: int,
     encyclopedia_ids: set[int] | None,
+    skip_vector_update: bool = False,
+    skip_scraping: bool = False,
 ) -> None:
     """
     Main async workflow for article synchronization.
@@ -543,46 +551,47 @@ async def sync_articles_async(
     logger.info(f"Batch size: {batch_size}")
     logger.info(f"Encyclopedia IDs: {encyclopedia_ids or 'all'}")
 
-    # Step 1-2: Fetch and categorize articles
-    categorized = await fetch_and_categorize_articles(encyclopedia_ids)
-    if categorized is None:
-        raise RuntimeError("Failed to fetch and categorize articles")
-
     # Initialize stats
-    stats = SyncStats(
-        sitemap_entries_count=len(categorized.sitemap_entries),
-        successful_sitemaps=len(categorized.successful_sitemaps),
-        total_sitemaps=categorized.total_sitemaps,
-        new_count=len(categorized.new_urls),
-        modified_count=len(categorized.modified_urls),
-        unchanged_count=categorized.unchanged_article_count,
-        db_articles_before=len(categorized.db_metadata),
-        deletions_skipped=categorized.skip_deletions,
-    )
+    stats = SyncStats()
 
-    # Step 3: Fetch article JSON
-    urls_to_fetch = categorized.new_urls + categorized.modified_urls
-    stats.fetch_attempted = len(urls_to_fetch)
+    if not skip_scraping:
+        # Step 1-2: Fetch and categorize articles
+        categorized = await fetch_and_categorize_articles(encyclopedia_ids)
+        if categorized is None:
+            raise RuntimeError("Failed to fetch and categorize articles")
 
-    fetched_articles = await fetch_article_content(urls_to_fetch, batch_size)
-    stats.fetch_successful = len(fetched_articles)
+        stats.sitemap_entries_count = len(categorized.sitemap_entries)
+        stats.successful_sitemaps = len(categorized.successful_sitemaps)
+        stats.total_sitemaps = categorized.total_sitemaps
+        stats.new_count = len(categorized.new_urls)
+        stats.modified_count = len(categorized.modified_urls)
+        stats.unchanged_count = categorized.unchanged_article_count
+        stats.db_articles_before = len(categorized.db_metadata)
+        stats.deletions_skipped = categorized.skip_deletions
 
-    # Step 4: Upsert articles
-    stats.upsert_success, stats.upsert_failure = upsert_articles_to_db(
-        fetched_articles, dry_run
-    )
+        # Step 3: Fetch article JSON
+        urls_to_fetch = categorized.new_urls + categorized.modified_urls
+        stats.fetch_attempted = len(urls_to_fetch)
 
-    # Step 5: Delete missing articles
-    stats.articles_deleted = delete_missing_articles_from_db(
-        categorized.deleted_ids, dry_run
-    )
+        fetched_articles = await fetch_article_content(urls_to_fetch, batch_size)
+        stats.fetch_successful = len(fetched_articles)
+
+        # Step 4: Upsert articles
+        stats.upsert_success, stats.upsert_failure = upsert_articles_to_db(
+            fetched_articles, dry_run
+        )
+
+        # Step 5: Delete missing articles
+        stats.articles_deleted = delete_missing_articles_from_db(
+            categorized.deleted_ids, dry_run
+        )
 
     # Step 6: Update vector indexes
-    if stats.upsert_success > 0 or stats.articles_deleted > 0:
+    if not skip_vector_update:
         stats.vector_stats = update_all_vector_indexes(batch_size, dry_run)
 
     # Step 7: Log summary
-    log_sync_summary(stats, dry_run, encyclopedia_ids, batch_size)
+    log_sync_summary(stats, dry_run, encyclopedia_ids, batch_size, skip_scraping)
 
 
 def main() -> None:
@@ -610,6 +619,16 @@ def main() -> None:
         "--encyclopedia-ids",
         type=str,
         help="Comma-separated encyclopedia IDs to sync (e.g., '14,15,18')",
+    )
+    parser.add_argument(
+        "--skip-vector-update",
+        action="store_true",
+        help="Skip updating vector indexes (useful for testing or if no indexes are configured)",
+    )
+    parser.add_argument(
+        "--skip-scraping",
+        action="store_true",
+        help="Skip fetching article JSON (useful for testing with existing database entries)",
     )
 
     args = parser.parse_args()

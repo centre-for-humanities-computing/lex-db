@@ -517,3 +517,189 @@ class TestFetchArticlesBatch:
                 # Should return empty list after all retries fail
                 assert len(result) == 0
                 assert mock_fetch.call_count == 7  # max_retries = 7
+
+
+class TestSyncArticlesAsync:
+    """Tests for sync_articles_async function with skip flags."""
+
+    @pytest.mark.asyncio
+    async def test_skip_scraping_skips_article_fetch(self) -> None:
+        """Test that skip_scraping=True skips fetching and categorizing articles."""
+        with patch(
+            "scripts.sync_articles.fetch_and_categorize_articles",
+            new_callable=AsyncMock,
+        ) as mock_fetch:
+            with patch(
+                "scripts.sync_articles.update_all_vector_indexes"
+            ) as mock_update_vectors:
+                mock_update_vectors.return_value = None
+
+                from scripts.sync_articles import sync_articles_async
+
+                await sync_articles_async(
+                    dry_run=False,
+                    batch_size=10,
+                    encyclopedia_ids=None,
+                    skip_vector_update=False,
+                    skip_scraping=True,
+                )
+
+                # Should not call fetch_and_categorize_articles
+                mock_fetch.assert_not_called()
+                mock_update_vectors.assert_called()  # Vector update should still be called
+
+    @pytest.mark.asyncio
+    async def test_skip_scraping_skips_upsert_and_delete(self) -> None:
+        """Test that skip_scraping=True skips upserting and deleting articles."""
+        with patch(
+            "scripts.sync_articles.fetch_and_categorize_articles",
+            new_callable=AsyncMock,
+        ) as mock_fetch_categorize:
+            with patch("scripts.sync_articles.upsert_articles_to_db") as mock_upsert:
+                with patch(
+                    "scripts.sync_articles.delete_missing_articles_from_db"
+                ) as mock_delete:
+                    with patch(
+                        "scripts.sync_articles.update_all_vector_indexes"
+                    ) as mock_update_vectors:
+                        mock_update_vectors.return_value = None
+
+                        from scripts.sync_articles import sync_articles_async
+
+                        await sync_articles_async(
+                            dry_run=False,
+                            batch_size=10,
+                            encyclopedia_ids=None,
+                            skip_vector_update=False,
+                            skip_scraping=True,
+                        )
+
+                        # Should not call upsert or delete
+                        mock_fetch_categorize.assert_not_called()
+                        mock_upsert.assert_not_called()
+                        mock_delete.assert_not_called()
+                        mock_update_vectors.assert_called()  # Vector update should still be called
+
+    @pytest.mark.asyncio
+    async def test_skip_vector_update_skips_vector_indexing(self) -> None:
+        """Test that skip_vector_update=True skips updating vector indexes."""
+        sitemap_entries: list[SitemapEntry] = [
+            SitemapEntry(
+                url="https://lex.dk/article1",
+                lastmod=datetime(2026, 1, 9, 12, 0, 0, tzinfo=timezone.utc),
+                encyclopedia_id=15,
+                permalink="article1",
+            )
+        ]
+
+        with patch(
+            "scripts.sync_articles.fetch_and_categorize_articles",
+            new_callable=AsyncMock,
+        ) as mock_fetch_categorize:
+            from scripts.sync_articles import CategorizedArticles
+
+            mock_fetch_categorize.return_value = CategorizedArticles(
+                sitemap_entries=sitemap_entries,
+                successful_sitemaps={1, 2, 3, 4, 5, 6},
+                total_sitemaps=6,
+                new_urls=["https://lex.dk/article1"],
+                modified_urls=[],
+                unchanged_article_count=0,
+                db_metadata={},
+                deleted_ids=[],
+                skip_deletions=False,
+            )
+
+            with patch(
+                "scripts.sync_articles.fetch_article_content", new_callable=AsyncMock
+            ) as mock_fetch_content:
+                mock_fetch_content.return_value = []
+
+                with patch(
+                    "scripts.sync_articles.upsert_articles_to_db"
+                ) as mock_upsert:
+                    mock_upsert.return_value = (0, 0)
+
+                    with patch(
+                        "scripts.sync_articles.delete_missing_articles_from_db"
+                    ) as mock_delete:
+                        mock_delete.return_value = 0
+
+                        with patch(
+                            "scripts.sync_articles.update_all_vector_indexes"
+                        ) as mock_update_vectors:
+                            from scripts.sync_articles import sync_articles_async
+
+                            await sync_articles_async(
+                                dry_run=False,
+                                batch_size=10,
+                                encyclopedia_ids=None,
+                                skip_vector_update=True,
+                                skip_scraping=False,
+                            )
+
+                            # Should not call update_all_vector_indexes
+                            mock_update_vectors.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_vector_update_called_when_not_skipped(self) -> None:
+        """Test that vector indexes are updated when skip_vector_update=False."""
+        sitemap_entries: list[SitemapEntry] = [
+            SitemapEntry(
+                url="https://lex.dk/article1",
+                lastmod=datetime(2026, 1, 9, 12, 0, 0, tzinfo=timezone.utc),
+                encyclopedia_id=15,
+                permalink="article1",
+            )
+        ]
+
+        with patch(
+            "scripts.sync_articles.fetch_and_categorize_articles",
+            new_callable=AsyncMock,
+        ) as mock_fetch_categorize:
+            from scripts.sync_articles import CategorizedArticles
+
+            mock_fetch_categorize.return_value = CategorizedArticles(
+                sitemap_entries=sitemap_entries,
+                successful_sitemaps={1, 2, 3, 4, 5, 6},
+                total_sitemaps=6,
+                new_urls=["https://lex.dk/article1"],
+                modified_urls=[],
+                unchanged_article_count=0,
+                db_metadata={},
+                deleted_ids=[],
+                skip_deletions=False,
+            )
+
+            with patch(
+                "scripts.sync_articles.fetch_article_content", new_callable=AsyncMock
+            ) as mock_fetch_content:
+                mock_fetch_content.return_value = []
+
+                with patch(
+                    "scripts.sync_articles.upsert_articles_to_db"
+                ) as mock_upsert:
+                    mock_upsert.return_value = (0, 0)
+
+                    with patch(
+                        "scripts.sync_articles.delete_missing_articles_from_db"
+                    ) as mock_delete:
+                        mock_delete.return_value = 0
+
+                        with patch(
+                            "scripts.sync_articles.update_all_vector_indexes"
+                        ) as mock_update_vectors:
+                            mock_update_vectors.return_value = None
+
+                            from scripts.sync_articles import sync_articles_async
+
+                            await sync_articles_async(
+                                dry_run=False,
+                                batch_size=10,
+                                encyclopedia_ids=None,
+                                skip_vector_update=False,
+                                skip_scraping=False,
+                            )
+
+                            # Should call update_all_vector_indexes
+                            mock_update_vectors.assert_called_once()
