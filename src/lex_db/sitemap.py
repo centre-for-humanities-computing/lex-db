@@ -74,7 +74,7 @@ def derive_encyclopedia_id(url: str) -> int:
 
 def derive_permalink(url: str) -> str:
     """
-    Derive permalink from URL path.
+    Derive permalink from URL path. Excludes entries that start with ".temaside" (e.g., "https://lex.dk/.temaside/xyz").
 
     Args:
         url: Full article URL (e.g., "https://lex.dk/eksteri%C3%B8r")
@@ -88,7 +88,7 @@ def derive_permalink(url: str) -> str:
     # URL decode and strip slashes
     decoded_path = unquote(path)
     permalink = decoded_path.strip("/")
-
+    permalink = permalink if permalink and not permalink.startswith(".temaside") else ""
     return permalink
 
 
@@ -140,13 +140,15 @@ def parse_sitemap(xml_content: str) -> list[SitemapEntry]:
 
                 permalink = derive_permalink(url)
 
-                entry = SitemapEntry(
-                    url=url,
-                    lastmod=lastmod,
-                    encyclopedia_id=encyclopedia_id,
-                    permalink=permalink,
-                )
-                entries.append(entry)
+                # Skip entries without valid permalinks (e.g., temaside entries)
+                if permalink:
+                    entry = SitemapEntry(
+                        url=url,
+                        lastmod=lastmod,
+                        encyclopedia_id=encyclopedia_id,
+                        permalink=permalink,
+                    )
+                    entries.append(entry)
 
             except (ValueError, Exception) as e:
                 logger.debug(f"Error parsing entry {url}: {e}")

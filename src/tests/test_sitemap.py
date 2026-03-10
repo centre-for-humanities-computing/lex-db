@@ -90,6 +90,16 @@ class TestDerivePermalink:
         url = "https://lex.dk/"
         assert derive_permalink(url) == ""
 
+    def test_temaside_excluded(self) -> None:
+        """Test that temaside URLs return empty string (excluded)."""
+        url = "https://lex.dk/.temaside/some-temaside"
+        assert derive_permalink(url) == ""
+
+    def test_temaside_with_subpath_excluded(self) -> None:
+        """Test that temaside URLs with subpaths return empty string."""
+        url = "https://lex.dk/.temaside/subpath/article"
+        assert derive_permalink(url) == ""
+
 
 class TestParseSitemap:
     """Tests for parse_sitemap function."""
@@ -155,6 +165,32 @@ class TestParseSitemap:
 </urlset>"""
         entries = parse_sitemap(xml)
         assert entries == []  # Should skip invalid entries
+
+    def test_parse_sitemap_excludes_temaside(self) -> None:
+        """Test that temaside entries are excluded from parsed sitemap."""
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://lex.dk/valid-article</loc>
+        <lastmod>2025-01-01T12:00:00Z</lastmod>
+    </url>
+    <url>
+        <loc>https://lex.dk/.temaside/temaside-1</loc>
+        <lastmod>2025-01-02T12:00:00Z</lastmod>
+    </url>
+    <url>
+        <loc>https://lex.dk/.temaside/subpath/temaside-2</loc>
+        <lastmod>2025-01-03T12:00:00Z</lastmod>
+    </url>
+    <url>
+        <loc>https://om.lex.dk/another-valid-article</loc>
+        <lastmod>2025-01-04T12:00:00Z</lastmod>
+    </url>
+</urlset>"""
+        entries = parse_sitemap(xml)
+        assert len(entries) == 2
+        assert entries[0].permalink == "valid-article"
+        assert entries[1].permalink == "another-valid-article"
 
     def test_parse_invalid_xml(self) -> None:
         """Test parsing invalid XML raises error."""
