@@ -9,6 +9,10 @@ install:
 	@echo "--- 🚀 Installing project dependencies ---"
 	uv sync
 
+install-gpu:
+	@echo "--- 🚀 Installing GPU-accelerated dependencies ---"
+	uv sync --extra gpu
+
 install-dev:
 	@echo "--- 🚀 Installing development dependencies ---"
 	uv sync --dev

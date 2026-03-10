@@ -29,7 +29,9 @@ def main() -> None:
 
     settings = get_settings()
     try:
-        logger.info(f"Connecting to database at {settings.DATABASE_URL}")
+        logger.info(
+            f"Connecting to {settings.DB_NAME} at {settings.DB_HOST}:{settings.DB_PORT}"
+        )
         with get_db_connection() as db_conn:
             # Fetch metadata for the index
             metadata = get_vector_index_metadata(db_conn, args.index_name)
