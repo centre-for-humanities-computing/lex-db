@@ -34,8 +34,6 @@ class Settings(BaseSettings):
     # Embedding model settings
     USE_GPU: bool = False  # Set to True to enable GPU acceleration for local models
     GPU_BATCH_SIZE: int = 64  # Batch size for GPU inference
-    GPU_MEMORY_LIMIT_GB: int = 40  # GPU memory limit per device in GB
-    GPU_DEVICE_IDS: str = "0,1,2,3"  # Comma-separated GPU device IDs (e.g., "0,1,2,3")
 
     # CPU embedding settings
     CPU_BATCH_SIZE: int = 16  # Batch size for CPU inference

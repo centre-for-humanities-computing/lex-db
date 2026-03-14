@@ -2,18 +2,22 @@
 
 from enum import Enum
 import os
+from typing import Protocol, runtime_checkable
 from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTQuantizer  # type: ignore
 from optimum.onnxruntime.configuration import AutoQuantizationConfig  # type: ignore
 import onnxruntime as ort  # type: ignore
 import torch
 from torch.nn.functional import normalize
-from transformers.models.auto.tokenization_auto import AutoTokenizer
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers.modeling_utils import PreTrainedModel  # type: ignore
+from transformers.models.auto.tokenization_auto import AutoTokenizer  # type: ignore
+from transformers.models.auto.modeling_auto import AutoModel  # type: ignore
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase  # type: ignore
 import numpy as np
 import time
 from collections import deque
 from threading import Lock
 import tiktoken
+from sentence_transformers import SentenceTransformer
 from lex_db.utils import get_logger
 from lex_db.config import get_settings
 from pathlib import Path
@@ -41,27 +45,26 @@ class TextType(str, Enum):
 
 def get_embedding_dimensions(model_choice: EmbeddingModel) -> int:
     """Get the dimension of embeddings for a given model."""
-    if model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL:
-        return 384
-    elif model_choice == EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE:
-        return 1024
-    elif model_choice == EmbeddingModel.OPENAI_ADA_002:
-        return 1536
-    elif model_choice == EmbeddingModel.OPENAI_SMALL_003:
-        return 1536
-    elif model_choice == EmbeddingModel.OPENAI_LARGE_003:
-        return 3072
-    elif model_choice == EmbeddingModel.JINA_V5_SMALL:
-        return 1024
-    elif model_choice == EmbeddingModel.JINA_V5_NANO:
-        return 768
-    elif model_choice == EmbeddingModel.MOCK_MODEL:
-        return 4  # A small, fixed dimension for testing
-    else:
+    dimensions = {
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL: 384,
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE: 1024,
+        EmbeddingModel.OPENAI_ADA_002: 1536,
+        EmbeddingModel.OPENAI_SMALL_003: 1536,
+        EmbeddingModel.OPENAI_LARGE_003: 3072,
+        EmbeddingModel.JINA_V5_SMALL: 1024,
+        EmbeddingModel.JINA_V5_NANO: 768,
+        EmbeddingModel.MOCK_MODEL: 4,
+    }
+    if model_choice not in dimensions:
         raise ValueError(f"Unknown model: {model_choice}")
+    return dimensions[model_choice]
 
 
-# Rate limiting for OpenAI API
+# =============================================================================
+# Rate Limiting for OpenAI API
+# =============================================================================
+
+
 class OpenAIRateLimiter:
     """Rate limiter for OpenAI API calls."""
 
@@ -127,8 +130,500 @@ class OpenAIRateLimiter:
 # Global rate limiter instance
 _openai_rate_limiter = OpenAIRateLimiter()
 
-# Module-level cache for loaded models
-_model_cache: dict[EmbeddingModel, dict] = {}
+
+# =============================================================================
+# Model Handler Pattern
+# =============================================================================
+
+
+@runtime_checkable
+class EmbeddingModelHandler(Protocol):
+    """Protocol defining the interface for model-specific embedding operations."""
+
+    def load_model(self, use_gpu: bool) -> tuple:
+        """Load model and tokenizer. Returns (model, tokenizer, use_gpu)."""
+        ...
+
+    def compute_embeddings(
+        self,
+        model: PreTrainedModel | ORTModelForFeatureExtraction | SentenceTransformer,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[tuple[str, TextType]],
+    ) -> list[list[float]]:
+        """Compute embeddings for texts."""
+        ...
+
+
+class E5ModelHandler:
+    """Handler for multilingual E5 models (small and large).
+
+    E5 models use:
+    - "query: " prefix for queries
+    - "passage: " prefix for passages
+    - Mean pooling with attention mask
+    - INT8 quantized ONNX for CPU inference
+    """
+
+    def __init__(self, model_choice: EmbeddingModel):
+        self.model_choice = model_choice
+        self.model_name = model_choice.value
+
+    def _format_texts(self, texts: list[tuple[str, TextType]]) -> list[str]:
+        """Format texts with E5-specific prefixes."""
+        return [f"{text_type.value}: {text}" for text, text_type in texts]
+
+    def load_model(self, use_gpu: bool) -> tuple:
+        """Load E5 model for GPU or CPU inference."""
+        if use_gpu:
+            return self._load_for_gpu()
+        else:
+            return self._load_for_cpu()
+
+    def _load_for_gpu(self) -> tuple:
+        """Load transformers model for GPU inference."""
+        device = "cuda:0"
+        logger.info(f"Loading E5 model for GPU: {self.model_name}")
+
+        model = AutoModel.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+        ).to(device)
+        model.eval()
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+        )
+
+        logger.info(f"E5 model loaded on {device}")
+        return model, tokenizer, True
+
+    def _load_for_cpu(self) -> tuple:
+        """Load ONNX model optimized for CPU inference with INT8 quantization."""
+        settings = get_settings()
+        num_threads = settings.CPU_NUM_THREADS
+
+        sess_options = self._create_session_options(num_threads)
+        cache_dir = get_onnx_cache_dir()
+        model_cache_path = cache_dir / self.model_name.replace("/", "_")
+        quantized_model_path = (
+            cache_dir / f"{self.model_name.replace('/', '_')}_quantized"
+        )
+
+        # Check if quantized model exists
+        if (
+            quantized_model_path.exists()
+            and (quantized_model_path / "model_quantized.onnx").exists()
+        ):
+            logger.info(
+                f"Loading quantized E5 ONNX model from cache: {quantized_model_path}"
+            )
+            model = ORTModelForFeatureExtraction.from_pretrained(
+                quantized_model_path,
+                file_name="model_quantized.onnx",
+                provider="CPUExecutionProvider",
+                session_options=sess_options,
+                provider_options={
+                    "CPUExecutionProvider": {
+                        "arena_extend_strategy": "kSameAsRequested"
+                    }
+                },
+            )
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            return model, tokenizer, False
+
+        # Check if regular ONNX model exists
+        if model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
+            logger.info(f"Loading E5 ONNX model from cache: {model_cache_path}")
+            model = ORTModelForFeatureExtraction.from_pretrained(
+                model_cache_path,
+                provider="CPUExecutionProvider",
+                session_options=sess_options,
+                provider_options={
+                    "CPUExecutionProvider": {
+                        "arena_extend_strategy": "kSameAsRequested"
+                    }
+                },
+            )
+            tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
+
+            # Quantize and save
+            model, tokenizer = self._quantize_model(
+                model, tokenizer, quantized_model_path
+            )
+            return model, tokenizer, False
+
+        # Export and quantize
+        logger.info(f"Exporting E5 ONNX model to: {model_cache_path}")
+        model = ORTModelForFeatureExtraction.from_pretrained(
+            self.model_name,
+            export=True,
+            provider="CPUExecutionProvider",
+            session_options=sess_options,
+            provider_options={
+                "CPUExecutionProvider": {"arena_extend_strategy": "kSameAsRequested"}
+            },
+        )
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+
+        model.save_pretrained(model_cache_path)
+        tokenizer.save_pretrained(model_cache_path)
+        logger.info(f"E5 ONNX model saved to cache: {model_cache_path}")
+
+        # Quantize
+        model, tokenizer = self._quantize_model(model, tokenizer, quantized_model_path)
+        return model, tokenizer, False
+
+    def _create_session_options(self, num_threads: int) -> ort.SessionOptions:
+        """Create optimized ONNX Runtime session options."""
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        )
+        sess_options.intra_op_num_threads = num_threads
+        sess_options.inter_op_num_threads = num_threads
+        sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+        sess_options.enable_cpu_mem_arena = True
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_mem_reuse = True
+        return sess_options
+
+    def _quantize_model(
+        self,
+        model: ORTModelForFeatureExtraction,
+        tokenizer: PreTrainedTokenizerBase,
+        quantized_model_path: Path,
+    ) -> tuple:
+        """Quantize model to INT8 and save."""
+        logger.info("Quantizing E5 model to INT8 for faster inference...")
+        quantizer = ORTQuantizer.from_pretrained(model)
+        qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
+
+        quantized_model_path.mkdir(parents=True, exist_ok=True)
+        quantizer.quantize(
+            save_dir=quantized_model_path,
+            quantization_config=qconfig,
+            file_suffix="quantized",
+        )
+        tokenizer.save_pretrained(quantized_model_path)
+
+        # Reload quantized model
+        sess_options = self._create_session_options(get_settings().CPU_NUM_THREADS)
+        model = ORTModelForFeatureExtraction.from_pretrained(
+            quantized_model_path,
+            file_name="model_quantized.onnx",
+            provider="CPUExecutionProvider",
+            session_options=sess_options,
+            provider_options={
+                "CPUExecutionProvider": {"arena_extend_strategy": "kSameAsRequested"}
+            },
+        )
+        logger.info(f"Quantized E5 model saved to: {quantized_model_path}")
+        return model, tokenizer
+
+    def compute_embeddings(
+        self,
+        model: PreTrainedModel | ORTModelForFeatureExtraction | SentenceTransformer,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[tuple[str, TextType]],
+    ) -> list[list[float]]:
+        """Compute embeddings using mean pooling."""
+
+        formatted_texts = self._format_texts(texts)
+
+        if isinstance(model, PreTrainedModel):
+            return self._compute_embeddings_gpu(model, tokenizer, formatted_texts)
+        elif isinstance(model, ORTModelForFeatureExtraction):
+            return self._compute_embeddings_onnx(model, tokenizer, formatted_texts)
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+
+    def _compute_embeddings_onnx(
+        self,
+        model: ORTModelForFeatureExtraction,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Compute mean-pooled normalized embeddings using ONNX."""
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            return_token_type_ids=False,
+            return_attention_mask=True,
+        )
+
+        with torch.no_grad():
+            outputs = model(**encoded)
+            token_embeddings = outputs.last_hidden_state
+            attention_mask = encoded["attention_mask"]
+
+            # Mean pooling with attention mask
+            input_mask_expanded = (
+                attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+            )
+            sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+            sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+            embeddings = sum_embeddings / sum_mask
+
+            # L2 normalize
+            embeddings = normalize(embeddings, p=2, dim=1)
+
+        return list(embeddings.numpy().tolist())
+
+    def _compute_embeddings_gpu(
+        self,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[str],
+        device: str = "cuda:0",
+    ) -> list[list[float]]:
+        """Compute mean-pooled normalized embeddings using transformers on GPU."""
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            return_token_type_ids=False,
+            return_attention_mask=True,
+        )
+
+        # Move inputs to GPU
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+
+        with torch.no_grad():
+            outputs = model(**encoded)
+            token_embeddings = outputs.last_hidden_state
+            attention_mask = encoded["attention_mask"]
+
+            # Mean pooling with attention mask
+            input_mask_expanded = (
+                attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+            )
+            sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+            sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+            embeddings = sum_embeddings / sum_mask
+
+            # L2 normalize
+            embeddings = normalize(embeddings, p=2, dim=1)
+
+        return list(embeddings.cpu().numpy().tolist())
+
+
+class JinaV5ModelHandler:
+    """Handler for Jina v5 models (small and nano).
+
+    Jina v5 models use:
+    - "Query: " prefix for queries (retrieval task)
+    - "Document: " prefix for passages (retrieval task)
+    - Last-token pooling (critical for Jina v5)
+    - Specialized ONNX models from 'onnx' subfolder for CPU
+    - model.encode() API with task="retrieval" for GPU
+    """
+
+    def __init__(self, model_choice: EmbeddingModel):
+        self.model_choice = model_choice
+        self.model_name = model_choice.value
+        # Jina provides specialized retrieval models for ONNX
+        self.onnx_model_name = f"{model_choice.value}-retrieval"
+
+    def _format_texts(self, texts: list[tuple[str, TextType]]) -> list[str]:
+        """Format texts with Jina-specific prefixes for retrieval task."""
+        formatted = []
+        for text, text_type in texts:
+            if text_type == TextType.QUERY:
+                formatted.append(f"Query: {text}")
+            else:
+                formatted.append(f"Document: {text}")
+        return formatted
+
+    def load_model(self, use_gpu: bool) -> tuple:
+        """Load Jina v5 model for GPU or CPU inference."""
+        if use_gpu:
+            return self._load_for_gpu()
+        else:
+            return self._load_for_cpu()
+
+    def _load_for_gpu(self) -> tuple:
+        """Load SentenceTransformer model for GPU inference."""
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading Jina v5 model for GPU: {self.model_name}")
+
+        model_kwargs: dict = {"trust_remote_code": True}
+
+        model = SentenceTransformer(
+            self.model_name,
+            trust_remote_code=True,
+            device=device,
+            model_kwargs=model_kwargs,
+        )
+
+        # SentenceTransformer doesn't need a separate tokenizer
+        tokenizer = None
+
+        logger.info(f"Jina v5 model loaded on {device}")
+        return model, tokenizer, True
+
+    def _load_for_cpu(self) -> tuple:
+        """Load specialized Jina ONNX model for CPU inference."""
+        settings = get_settings()
+        num_threads = settings.CPU_NUM_THREADS
+
+        sess_options = self._create_session_options(num_threads)
+        cache_dir = get_onnx_cache_dir()
+        # Use separate cache path for Jina retrieval models
+        model_cache_path = cache_dir / self.onnx_model_name.replace("/", "_")
+
+        # Jina provides pre-optimized ONNX models in the 'onnx' subfolder
+        if model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
+            logger.info(f"Loading Jina v5 ONNX model from cache: {model_cache_path}")
+        else:
+            logger.info(f"Downloading Jina v5 ONNX model: {self.onnx_model_name}")
+
+        model = ORTModelForFeatureExtraction.from_pretrained(
+            self.onnx_model_name,
+            subfolder="onnx",
+            file_name="model.onnx",
+            provider="CPUExecutionProvider",
+            session_options=sess_options,
+            provider_options={
+                "CPUExecutionProvider": {"arena_extend_strategy": "kSameAsRequested"}
+            },
+            trust_remote_code=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.onnx_model_name,
+            trust_remote_code=True,
+        )
+
+        # Cache the model for faster subsequent loads
+        if not (model_cache_path / "model.onnx").exists():
+            model_cache_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(model_cache_path)
+            tokenizer.save_pretrained(model_cache_path)
+            logger.info(f"Jina v5 ONNX model cached to: {model_cache_path}")
+
+        return model, tokenizer, False
+
+    def _create_session_options(self, num_threads: int) -> ort.SessionOptions:
+        """Create optimized ONNX Runtime session options."""
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        )
+        sess_options.intra_op_num_threads = num_threads
+        sess_options.inter_op_num_threads = num_threads
+        sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+        sess_options.enable_cpu_mem_arena = True
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_mem_reuse = True
+        return sess_options
+
+    def compute_embeddings(
+        self,
+        model: PreTrainedModel | ORTModelForFeatureExtraction | SentenceTransformer,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[tuple[str, TextType]],
+    ) -> list[list[float]]:
+        """Compute embeddings using model-specific method."""
+        if isinstance(model, SentenceTransformer):
+            return self._compute_embeddings_gpu(model, texts)
+        elif isinstance(model, ORTModelForFeatureExtraction):
+            return self._compute_embeddings_onnx(
+                model, tokenizer, self._format_texts(texts)
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+
+    def _compute_embeddings_onnx(
+        self,
+        model: ORTModelForFeatureExtraction,
+        tokenizer: PreTrainedTokenizerBase,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Compute embeddings using last-token pooling (critical for Jina v5)."""
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            return_token_type_ids=False,
+            return_attention_mask=True,
+        )
+
+        with torch.no_grad():
+            outputs = model(**encoded)
+            last_hidden_state = outputs.last_hidden_state
+
+            # Last-token pooling: take the hidden state of the last non-padding token
+            sequence_lengths = encoded["attention_mask"].sum(dim=1) - 1
+            embeddings = last_hidden_state[
+                torch.arange(last_hidden_state.size(0)), sequence_lengths
+            ]
+
+            # L2 normalize
+            embeddings = normalize(embeddings, p=2, dim=1)
+
+        return list(embeddings.numpy().tolist())
+
+    def _compute_embeddings_gpu(
+        self,
+        model: SentenceTransformer,
+        texts: list[tuple[str, TextType]],
+    ) -> list[list[float]]:
+        """Compute embeddings using SentenceTransformer's encode() API.
+
+        SentenceTransformer handles pooling internally.
+        We need to separate queries and documents to use the correct prompt_name.
+        """
+
+        queries = [text for text, text_type in texts if text_type == TextType.QUERY]
+        documents = [text for text, text_type in texts if text_type == TextType.PASSAGE]
+
+        all_embeddings: list[list[float]] = []
+        # Encode queries
+        if queries:
+            query_embeddings = model.encode(  # type: ignore
+                sentences=queries,
+                task="retrieval",
+                prompt_name="query",
+            )
+            all_embeddings.extend(query_embeddings)
+
+        # Encode documents
+        if documents:
+            doc_embeddings = model.encode(  # type: ignore
+                sentences=documents,
+                task="retrieval",
+                prompt_name="document",
+            )
+            all_embeddings.extend(doc_embeddings)
+
+        return all_embeddings
+
+
+# =============================================================================
+# Handler Registry
+# =============================================================================
+
+
+def get_handler(model_choice: EmbeddingModel) -> EmbeddingModelHandler:
+    """Get the appropriate handler for a model choice."""
+    if model_choice in (
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL,
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
+    ):
+        return E5ModelHandler(model_choice)
+    elif model_choice in (EmbeddingModel.JINA_V5_SMALL, EmbeddingModel.JINA_V5_NANO):
+        return JinaV5ModelHandler(model_choice)
+    else:
+        raise ValueError(f"No handler for model: {model_choice}")
+
+
+# =============================================================================
+# Model Cache and Loading
+# =============================================================================
 
 
 def get_onnx_cache_dir() -> Path:
@@ -138,276 +633,55 @@ def get_onnx_cache_dir() -> Path:
     return cache_dir
 
 
-def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
-    """Get a cached ONNX embedding model instance.
+# Module-level cache for loaded models
+_model_cache: dict[EmbeddingModel, dict] = {}
 
-    Automatically uses GPU if available and USE_GPU=True in settings.
-    Falls back to CPU-optimized quantized model otherwise.
+
+def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
+    """Get a cached embedding model instance.
+
+    Uses handlers to load models with appropriate settings for GPU or CPU inference.
     """
     if model_choice not in _model_cache:
-        if model_choice not in (
-            EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
-            EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL,
-            EmbeddingModel.JINA_V5_NANO,
-            EmbeddingModel.JINA_V5_SMALL,
-        ):
-            raise ValueError(f"Local model not supported: {model_choice}")
+        handler = get_handler(model_choice)
 
-        model_name = model_choice.value
         settings = get_settings()
         use_gpu = settings.USE_GPU
-
-        # Define cache directory for this specific model
-        # Use separate cache paths for GPU vs CPU to avoid loading wrong model variant
-        cache_dir = get_onnx_cache_dir()
-        model_cache_path = (
-            cache_dir / f"{model_name.replace('/', '_')}{'_gpu' if use_gpu else ''}"
-        )
-        quantized_model_path = cache_dir / f"{model_name.replace('/', '_')}_quantized"
 
         # Check GPU availability
         if use_gpu:
             if torch.cuda.is_available():
-                gpu_count = torch.cuda.device_count()
-                gpu_name = torch.cuda.get_device_name(0) if gpu_count > 0 else "Unknown"
-                logger.info(
-                    f"GPU acceleration enabled. Found {gpu_count} GPU(s): {gpu_name}"
-                )
+                gpu_name = torch.cuda.get_device_name(0)
+                logger.info(f"GPU acceleration enabled. Using: {gpu_name}")
             else:
                 logger.warning(
                     "USE_GPU=True but CUDA is not available. Falling back to CPU."
                 )
                 use_gpu = False
-                # Update cache path for CPU fallback
-                model_cache_path = cache_dir / model_name.replace("/", "_")
 
-        logger.info(f"Loading ONNX model: {model_name} (GPU: {use_gpu})")
-
-        if use_gpu:
-            # GPU path: Load model without quantization for better GPU performance
-            device_ids = [int(d.strip()) for d in settings.GPU_DEVICE_IDS.split(",")]
-            logger.info(f"Using GPU devices: {device_ids}")
-
-            # Load one model instance per GPU for parallel processing
-            models_per_gpu = []
-            for device_id in device_ids:
-                model, tokenizer = _load_model_for_gpu(
-                    model_name, model_cache_path, device_id
-                )
-                models_per_gpu.append((model, tokenizer, device_id))
-
-            # Use first model/tokenizer as primary (for single-GPU fallback)
-            model, tokenizer, _ = models_per_gpu[0]
-        else:
-            # CPU path: Use quantized model for faster CPU inference
-            model, tokenizer = _load_model_for_cpu(
-                model_name, model_cache_path, quantized_model_path
-            )
-            models_per_gpu = None
+        model, tokenizer, actual_use_gpu = handler.load_model(use_gpu)
 
         _model_cache[model_choice] = {
             "model": model,
             "tokenizer": tokenizer,
-            "use_gpu": use_gpu,
-            "models_per_gpu": models_per_gpu,
+            "use_gpu": actual_use_gpu,
+            "handler": handler,
         }
 
-        logger.info(f"ONNX model loaded successfully (GPU: {use_gpu})")
+        logger.info(f"Model loaded successfully (GPU: {actual_use_gpu})")
 
     return _model_cache[model_choice]
 
 
-def _load_model_for_gpu(
-    model_name: str, model_cache_path: Path, device_id: int = 0
-) -> tuple:
-    """Load ONNX model optimized for GPU inference.
-
-    GPU inference works best with non-quantized FP32 models.
-
-    Args:
-        model_name: HuggingFace model name
-        model_cache_path: Path to cache directory
-        device_id: GPU device ID to use (default: 0)
-    """
-    settings = get_settings()
-    gpu_mem_limit = (
-        settings.GPU_MEMORY_LIMIT_GB * 1024 * 1024 * 1024
-    )  # Convert GB to bytes
-
-    provider_options = {
-        "device_id": device_id,
-        "arena_extend_strategy": "kNextPowerOfTwo",
-        "gpu_mem_limit": gpu_mem_limit,
-        "cudnn_conv_algo_search": "EXHAUSTIVE",
-    }
-
-    # Check if model exists in cache
-    if model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
-        logger.info(
-            f"Loading ONNX model from cache: {model_cache_path} (GPU {device_id})"
-        )
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            model_cache_path,
-            provider="CUDAExecutionProvider",
-            provider_options=provider_options,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
-    else:
-        logger.info(
-            f"Exporting and saving ONNX model to: {model_cache_path} (GPU {device_id})"
-        )
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            model_name,
-            export=True,
-            provider="CUDAExecutionProvider",
-            provider_options=provider_options,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        # Save the model and tokenizer to disk
-        model_cache_path.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(model_cache_path)
-        tokenizer.save_pretrained(model_cache_path)
-        logger.info(f"ONNX model saved to cache: {model_cache_path}")
-
-    return model, tokenizer
-
-
-def _load_model_for_cpu(
-    model_name: str, model_cache_path: Path, quantized_model_path: Path
-) -> tuple:
-    """Load ONNX model optimized for CPU inference with INT8 quantization."""
-    settings = get_settings()
-    num_threads = settings.CPU_NUM_THREADS
-
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_options.intra_op_num_threads = num_threads
-    sess_options.inter_op_num_threads = num_threads
-    sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
-
-    # Enable additional optimizations
-    sess_options.enable_cpu_mem_arena = True
-    sess_options.enable_mem_pattern = True
-    sess_options.enable_mem_reuse = True
-
-    # Check if quantized model exists
-    if (
-        quantized_model_path.exists()
-        and (quantized_model_path / "model_quantized.onnx").exists()
-    ):
-        logger.info(f"Loading quantized ONNX model from cache: {quantized_model_path}")
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            quantized_model_path,
-            file_name="model_quantized.onnx",
-            provider="CPUExecutionProvider",
-            session_options=sess_options,
-            provider_options={
-                "CPUExecutionProvider": {
-                    "arena_extend_strategy": "kSameAsRequested",
-                }
-            },
-        )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-    # Check if regular ONNX model exists
-    elif model_cache_path.exists() and (model_cache_path / "model.onnx").exists():
-        logger.info(f"Loading ONNX model from cache: {model_cache_path}")
-        logger.info("Quantizing model to INT8 for faster inference...")
-
-        # Load the model first
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            model_cache_path,
-            provider="CPUExecutionProvider",
-            session_options=sess_options,
-            provider_options={
-                "CPUExecutionProvider": {
-                    "arena_extend_strategy": "kSameAsRequested",
-                }
-            },
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_cache_path)
-
-        # Quantize the model
-        quantizer = ORTQuantizer.from_pretrained(model)
-        qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
-
-        # Save quantized model
-        quantized_model_path.mkdir(parents=True, exist_ok=True)
-        quantizer.quantize(
-            save_dir=quantized_model_path,
-            quantization_config=qconfig,
-            file_suffix="quantized",
-        )
-        tokenizer.save_pretrained(quantized_model_path)
-
-        # Reload the quantized model
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            quantized_model_path,
-            file_name="model_quantized.onnx",
-            provider="CPUExecutionProvider",
-            session_options=sess_options,
-            provider_options={
-                "CPUExecutionProvider": {
-                    "arena_extend_strategy": "kSameAsRequested",
-                }
-            },
-        )
-        logger.info(f"Quantized model saved to: {quantized_model_path}")
-    else:
-        logger.info(f"Exporting and saving ONNX model to: {model_cache_path}")
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            model_name,
-            export=True,
-            provider="CPUExecutionProvider",
-            session_options=sess_options,
-            provider_options={
-                "CPUExecutionProvider": {
-                    "arena_extend_strategy": "kSameAsRequested",
-                }
-            },
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        # Save the model and tokenizer to disk
-        model.save_pretrained(model_cache_path)
-        tokenizer.save_pretrained(model_cache_path)
-        logger.info(f"ONNX model saved to cache: {model_cache_path}")
-
-        # Quantize the newly exported model
-        logger.info("Quantizing model to INT8 for faster inference...")
-        quantizer = ORTQuantizer.from_pretrained(model)
-        qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
-
-        quantized_model_path.mkdir(parents=True, exist_ok=True)
-        quantizer.quantize(
-            save_dir=quantized_model_path,
-            quantization_config=qconfig,
-            file_suffix="quantized",
-        )
-        tokenizer.save_pretrained(quantized_model_path)
-
-        # Reload the quantized model
-        model = ORTModelForFeatureExtraction.from_pretrained(
-            quantized_model_path,
-            file_name="model_quantized.onnx",
-            provider="CPUExecutionProvider",
-            session_options=sess_options,
-            provider_options={
-                "CPUExecutionProvider": {
-                    "arena_extend_strategy": "kSameAsRequested",
-                }
-            },
-        )
-        logger.info(f"Quantized model saved to: {quantized_model_path}")
-
-    return model, tokenizer
+# =============================================================================
+# Batching Utilities
+# =============================================================================
 
 
 def create_optimal_request_batches(
     texts: list[str], max_tokens_per_batch: int = 8000
 ) -> list[list[str]]:
     """Create batches that don't exceed the token limit."""
-
     tokenizer = tiktoken.get_encoding("cl100k_base")
 
     batches = []
@@ -440,141 +714,9 @@ def create_optimal_request_batches(
     return batches
 
 
-def create_text_batches(texts: list[str], batch_size: int = 32) -> list[list[str]]:
-    """Create batches of texts for parallel processing."""
-    return [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
-
-
-def _compute_embeddings(
-    model: ORTModelForFeatureExtraction,
-    tokenizer: PreTrainedTokenizerBase,
-    texts: list[str],
-    device_id: int | None = None,
-) -> list[list[float]]:
-    """Compute mean-pooled normalized embeddings for a batch of texts."""
-
-    encoded = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        return_tensors="pt",
-        return_token_type_ids=False,
-        return_attention_mask=True,
-    )
-
-    # Move tensors to GPU if specified
-    if device_id is not None:
-        encoded = {k: v.cuda(device_id) for k, v in encoded.items()}
-
-    with torch.no_grad():
-        outputs = model(**encoded)
-        token_embeddings = outputs.last_hidden_state
-        attention_mask = encoded["attention_mask"]
-
-        # Mean pooling with attention mask
-        input_mask_expanded = (
-            attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        )
-        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
-        sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-        embeddings = sum_embeddings / sum_mask
-
-        # L2 normalize
-        embeddings = normalize(embeddings, p=2, dim=1)
-
-    return list(embeddings.cpu().numpy().tolist())
-
-
-def _generate_embeddings_single_device(
-    texts: list[tuple[str, TextType]],
-    model: ORTModelForFeatureExtraction,
-    tokenizer: PreTrainedTokenizerBase,
-    use_gpu: bool,
-    batch_size: int,
-) -> list[list[float]]:
-    """Generate embeddings using a single device (CPU or single GPU)."""
-    all_embeddings = []
-    device_id = 0 if use_gpu else None
-    total_batches = (len(texts) + batch_size - 1) // batch_size
-
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i : i + batch_size]
-        formatted_texts = [f"{text[1].value}: {text[0]}" for text in batch_texts]
-
-        embeddings = _compute_embeddings(model, tokenizer, formatted_texts, device_id)
-        all_embeddings.extend(embeddings)
-
-        if total_batches > 1:
-            logger.debug(f"Processed batch {i // batch_size + 1}/{total_batches}")
-
-    return all_embeddings
-
-
-def _generate_embeddings_multi_gpu(
-    texts: list[tuple[str, TextType]],
-    models_per_gpu: list[
-        tuple[ORTModelForFeatureExtraction, PreTrainedTokenizerBase, int]
-    ],
-    tokenizer: PreTrainedTokenizerBase,
-    batch_size: int,
-) -> list[list[float]]:
-    """Generate embeddings using multiple GPUs in parallel."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    num_gpus = len(models_per_gpu)
-    logger.info(f"Processing {len(texts)} texts across {num_gpus} GPUs")
-
-    # Split texts into chunks for each GPU
-    chunk_size = (len(texts) + num_gpus - 1) // num_gpus
-    chunks = [texts[i : i + chunk_size] for i in range(0, len(texts), chunk_size)]
-
-    # Pad with empty lists to match GPU count
-    chunks.extend([[] for _ in range(num_gpus - len(chunks))])
-
-    all_embeddings: list[list[list[float]]] = [[] for _ in range(len(chunks))]
-
-    def process_chunk(
-        chunk_idx: int, chunk: list, model_tokenizer_device: tuple
-    ) -> tuple[int, list[list[float]]]:
-        """Process a chunk of texts on a specific GPU."""
-        model, _, device_id = model_tokenizer_device
-
-        if not chunk:
-            return chunk_idx, []
-
-        chunk_embeddings = []
-        total_batches = (len(chunk) + batch_size - 1) // batch_size
-
-        for i in range(0, len(chunk), batch_size):
-            batch_texts = chunk[i : i + batch_size]
-            formatted_texts = [f"{text[1].value}: {text[0]}" for text in batch_texts]
-
-            embeddings = _compute_embeddings(
-                model, tokenizer, formatted_texts, device_id
-            )
-            chunk_embeddings.extend(embeddings)
-
-            if total_batches > 1:
-                logger.debug(
-                    f"GPU {device_id}: Processed batch {i // batch_size + 1}/{total_batches}"
-                )
-
-        return chunk_idx, chunk_embeddings
-
-    # Process chunks in parallel across GPUs
-    with ThreadPoolExecutor(max_workers=num_gpus) as executor:
-        futures = [
-            executor.submit(process_chunk, idx, chunk, mtd)
-            for idx, (chunk, mtd) in enumerate(zip(chunks, models_per_gpu))
-        ]
-        for future in as_completed(futures):
-            chunk_idx, chunk_embeddings = future.result()
-            all_embeddings[chunk_idx] = chunk_embeddings
-
-    # Flatten results in order
-    result = [emb for chunk_embs in all_embeddings for emb in chunk_embs]
-    logger.info(f"Multi-GPU processing complete: {len(result)} embeddings generated")
-    return result
+# =============================================================================
+# Main Embedding Generation
+# =============================================================================
 
 
 def generate_embeddings(
@@ -593,17 +735,18 @@ def generate_embeddings(
             f"Please filter empty strings before calling generate_embeddings()"
         )
 
-    if model_choice == EmbeddingModel.MOCK_MODEL:  # Add this block
+    # Handle mock model
+    if model_choice == EmbeddingModel.MOCK_MODEL:
         logger.debug(f"Generating MOCK embeddings for {len(texts)} texts")
-        # Return a list of random dummy embeddings for testing
         return [
             np.random.random_sample(
                 get_embedding_dimensions(EmbeddingModel.MOCK_MODEL)
             ).tolist()
-            for t in texts
+            for _ in texts
         ]
 
-    elif model_choice in (
+    # Handle local models (E5 and Jina)
+    if model_choice in (
         EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
         EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL,
         EmbeddingModel.JINA_V5_SMALL,
@@ -612,27 +755,30 @@ def generate_embeddings(
         model_data = get_local_embedding_model(model_choice)
         model = model_data["model"]
         tokenizer = model_data["tokenizer"]
-        use_gpu = model_data.get("use_gpu", False)
-        models_per_gpu = model_data.get("models_per_gpu")
+        use_gpu = model_data["use_gpu"]
+        handler = model_data["handler"]
 
         # Use larger batch size for GPU, smaller for CPU
         settings = get_settings()
         batch_size = settings.GPU_BATCH_SIZE if use_gpu else settings.CPU_BATCH_SIZE
 
-        # Check if we have multiple GPUs for parallel processing
-        if use_gpu and models_per_gpu and len(models_per_gpu) > 1:
-            # Multi-GPU parallel processing
-            all_embeddings = _generate_embeddings_multi_gpu(
-                texts, models_per_gpu, tokenizer, batch_size
-            )
-        else:
-            # Single GPU or CPU processing
-            all_embeddings = _generate_embeddings_single_device(
-                texts, model, tokenizer, use_gpu, batch_size
-            )
+        all_embeddings = []
+        total_batches = (len(texts) + batch_size - 1) // batch_size
+
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+
+            # Compute embeddings using handler
+            embeddings = handler.compute_embeddings(model, tokenizer, batch_texts)
+
+            all_embeddings.extend(embeddings)
+
+            if total_batches > 1:
+                logger.debug(f"Processed batch {i // batch_size + 1}/{total_batches}")
 
         return all_embeddings
 
+    # Handle OpenAI models
     elif model_choice in [
         EmbeddingModel.OPENAI_ADA_002,
         EmbeddingModel.OPENAI_SMALL_003,
@@ -672,19 +818,20 @@ def generate_embeddings(
                     logger.error(f"Error in batch {batch_idx}: {str(e)}")
                     return batch_idx, None
 
-            max_workers = min(32, len(batches) + 4)  # Don't over-provision
+            max_workers = min(32, len(batches) + 4)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
                     executor.submit(process_batch, (i, batch))
                     for i, batch in enumerate(batches)
                 ]
                 for future in as_completed(futures):
-                    batch_idx, result = future.result()  # type: ignore
+                    batch_idx, result = future.result()
                     if result is not None:
                         all_results[batch_idx] = result
+
             # Flatten results in correct order
             all_embeddings = []
-            for result in all_results:  # type: ignore
+            for result in all_results:
                 if result is not None:
                     all_embeddings.extend(result)
 
@@ -696,5 +843,6 @@ def generate_embeddings(
             raise ImportError("OpenAI package not installed. Install with 'uv sync'.")
         except Exception as e:
             raise ValueError(f"Error generating OpenAI embeddings: {str(e)}")
+
     else:
         raise ValueError(f"Unsupported embedding model: {model_choice}")

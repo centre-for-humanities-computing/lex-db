@@ -1,6 +1,6 @@
 # Makefile for the Lex DB project
 
-.PHONY: install run static-type-check lint lint-check test pr help
+.PHONY: install install-dev generate-openapi-schema run-dev run static-type-check lint lint-check test pr help
 
 # Default target
 default: help
@@ -8,10 +8,6 @@ default: help
 install:
 	@echo "--- 🚀 Installing project dependencies ---"
 	uv sync
-
-install-gpu:
-	@echo "--- 🚀 Installing GPU-accelerated dependencies ---"
-	uv sync --extra gpu
 
 install-dev:
 	@echo "--- 🚀 Installing development dependencies ---"
@@ -22,11 +18,11 @@ generate-openapi-schema:
 	uv run generate_openapi.py main:app --out openapi/openapi.yaml
 	@echo "OpenAPI schema generated successfully."
 
-run-dev: install-dev generate-openapi-schema
+run-dev: generate-openapi-schema
 	@echo "--- ▶️ Running the application in dev mode ---"
 	uv run main.py
 
-run: install generate-openapi-schema
+run: generate-openapi-schema
 	@echo "--- ▶️ Running the application ---"
 	uv run main.py
 
@@ -57,7 +53,7 @@ help:
 	@echo "Makefile for the Lex DB project"
 	@echo ""
 	@echo "Available commands:"
-	@echo "  make install             Install project dependencies using uv sync"
+	@echo "  make install             Install project dependencies (CPU version)"
 	@echo "  make run                 Run the FastAPI application using 'uv run main.py'"
 	@echo "  make static-type-check   Run static type checking with mypy on the current directory"
 	@echo "  make lint                Format code with Ruff and apply lint fixes"
