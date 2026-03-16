@@ -448,7 +448,7 @@ class JinaV5ModelHandler:
     def _load_for_gpu(self) -> tuple:
         """Load SentenceTransformer model for GPU inference."""
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Loading Jina v5 model for GPU: {self.model_name}")
+        logger.info(f"Loading Jina v5 model: {self.model_name}, on {device}")
 
         model_kwargs: dict = {"trust_remote_code": True}
 
@@ -645,19 +645,13 @@ def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
     if model_choice not in _model_cache:
         handler = get_handler(model_choice)
 
-        settings = get_settings()
-        use_gpu = settings.USE_GPU
-
-        # Check GPU availability
+        # Automatically detect GPU availability
+        use_gpu = torch.cuda.is_available()
         if use_gpu:
-            if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0)
-                logger.info(f"GPU acceleration enabled. Using: {gpu_name}")
-            else:
-                logger.warning(
-                    "USE_GPU=True but CUDA is not available. Falling back to CPU."
-                )
-                use_gpu = False
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"GPU acceleration enabled. Using: {gpu_name}")
+        else:
+            logger.info("CUDA not available, using CPU for inference")
 
         model, tokenizer, actual_use_gpu = handler.load_model(use_gpu)
 

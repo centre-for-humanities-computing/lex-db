@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     DB_POOL_MAX_SIZE: int = 10
 
     # Embedding model settings
-    USE_GPU: bool = False  # Set to True to enable GPU acceleration for local models
     GPU_BATCH_SIZE: int = 64  # Batch size for GPU inference
 
     # CPU embedding settings
