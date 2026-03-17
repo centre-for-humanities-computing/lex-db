@@ -633,7 +633,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-vector-update",
         action="store_true",
-        help="Skip updating vector indexes (useful for testing or if no indexes are configured)",
+        help="Skip updating vector indexes (useful for testing or for only updating the article content)",
     )
     parser.add_argument(
         "--skip-scraping",
@@ -657,6 +657,8 @@ def main() -> None:
                 dry_run=args.dry_run,
                 batch_size=args.batch_size,
                 encyclopedia_ids=encyclopedia_ids,
+                skip_scraping=args.skip_scraping,
+                skip_vector_update=args.skip_vector_update,
                 indexes_to_update={
                     name.strip() for name in args.vector_indexes.split(",")
                 },
