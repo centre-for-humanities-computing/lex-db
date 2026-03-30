@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     DB_POOL_MIN_SIZE: int = 2
     DB_POOL_MAX_SIZE: int = 10
 
+    # Embedding model settings
+    GPU_BATCH_SIZE: int = 64  # Batch size for GPU inference
+
+    # CPU embedding settings
+    CPU_BATCH_SIZE: int = 16  # Batch size for CPU inference
+    CPU_NUM_THREADS: int = 4  # Number of threads for CPU inference
+
     # Sitemap settings
     SITEMAP_BASE_URL: str = "https://lex.dk/.sitemap"
     SITEMAP_REQUEST_TIMEOUT: int = 30

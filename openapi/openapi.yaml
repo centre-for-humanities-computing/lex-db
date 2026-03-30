@@ -319,6 +319,8 @@ components:
       enum:
       - intfloat/multilingual-e5-small
       - intfloat/multilingual-e5-large
+      - jinaai/jina-embeddings-v5-text-small
+      - jinaai/jina-embeddings-v5-text-nano
       - text-embedding-ada-002
       - text-embedding-3-small
       - text-embedding-3-large

@@ -530,7 +530,7 @@ class TestSyncArticlesAsync:
             new_callable=AsyncMock,
         ) as mock_fetch:
             with patch(
-                "scripts.sync_articles.update_all_vector_indexes"
+                "scripts.sync_articles.update_vector_indexes"
             ) as mock_update_vectors:
                 mock_update_vectors.return_value = None
 
@@ -560,7 +560,7 @@ class TestSyncArticlesAsync:
                     "scripts.sync_articles.delete_missing_articles_from_db"
                 ) as mock_delete:
                     with patch(
-                        "scripts.sync_articles.update_all_vector_indexes"
+                        "scripts.sync_articles.update_vector_indexes"
                     ) as mock_update_vectors:
                         mock_update_vectors.return_value = None
 
@@ -626,7 +626,7 @@ class TestSyncArticlesAsync:
                         mock_delete.return_value = 0
 
                         with patch(
-                            "scripts.sync_articles.update_all_vector_indexes"
+                            "scripts.sync_articles.update_vector_indexes"
                         ) as mock_update_vectors:
                             from scripts.sync_articles import sync_articles_async
 
@@ -644,4 +644,3 @@ class TestSyncArticlesAsync:
                             mock_fetch_content.assert_called_once()  # Should still fetch article content
                             mock_upsert.assert_called_once()  # Should still upsert articles
                             mock_delete.assert_called_once()  # Should still delete missing articles
-

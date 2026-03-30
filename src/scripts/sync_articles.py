@@ -411,9 +411,10 @@ def delete_missing_articles_from_db(
     return deleted_count
 
 
-def update_all_vector_indexes(
+def update_vector_indexes(
     batch_size: int,
     dry_run: bool,
+    indexes_to_update: set[str] | None = None,
 ) -> dict[str, VectorIndexStats]:
     """
     Update all vector indexes.
@@ -439,6 +440,12 @@ def update_all_vector_indexes(
 
         for index_meta in all_indexes:
             index_name = index_meta["index_name"]
+            if indexes_to_update and index_name not in indexes_to_update:
+                logger.info(
+                    f"Skipping vector index '{index_name}' (not in specified list)"
+                )
+                continue
+
             logger.info(f"Updating vector index: {index_name}")
 
             try:
@@ -541,6 +548,7 @@ async def sync_articles_async(
     encyclopedia_ids: set[int] | None,
     skip_vector_update: bool = False,
     skip_scraping: bool = False,
+    indexes_to_update: set[str] | None = None,
 ) -> None:
     """
     Main async workflow for article synchronization.
@@ -588,7 +596,9 @@ async def sync_articles_async(
 
     # Step 6: Update vector indexes
     if not skip_vector_update:
-        stats.vector_stats = update_all_vector_indexes(batch_size, dry_run)
+        stats.vector_stats = update_vector_indexes(
+            batch_size, dry_run, indexes_to_update
+        )
 
     # Step 7: Log summary
     log_sync_summary(stats, dry_run, encyclopedia_ids, batch_size, skip_scraping)
@@ -623,12 +633,18 @@ def main() -> None:
     parser.add_argument(
         "--skip-vector-update",
         action="store_true",
-        help="Skip updating vector indexes (useful for testing or if no indexes are configured)",
+        help="Skip updating vector indexes (useful for testing or for only updating the article content)",
     )
     parser.add_argument(
         "--skip-scraping",
         action="store_true",
         help="Skip fetching article JSON (useful for testing with existing database entries)",
+    )
+    parser.add_argument(
+        "--vector-indexes",
+        type=str,
+        default="e5_small,article_embeddings_e5",
+        help="Comma-separated vector index names to update (e.g., 'index1,index2')",
     )
 
     args = parser.parse_args()
@@ -641,6 +657,11 @@ def main() -> None:
                 dry_run=args.dry_run,
                 batch_size=args.batch_size,
                 encyclopedia_ids=encyclopedia_ids,
+                skip_scraping=args.skip_scraping,
+                skip_vector_update=args.skip_vector_update,
+                indexes_to_update={
+                    name.strip() for name in args.vector_indexes.split(",")
+                },
             )
         )
     except ValueError as e:

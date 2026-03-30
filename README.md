@@ -27,6 +27,18 @@ cd lex-db
 make install
 ```
 
+#### GPU vs CPU Installation
+
+By default, ONNX models with are used with CPU for broader compatibility.
+
+**For GPU acceleration** (NVIDIA CUDA):
+To enable GPU acceleration, set in your `.env`:
+```env
+USE_GPU=true
+```
+
+Note: GPU mode uses the transformers library directly for inference, while CPU mode uses ONNX Runtime with INT8 quantization for optimal performance.
+
 ### 3. Set up PostgreSQL database
 Ensure PostgreSQL is installed and the pgvector extension is available:
 ```bash

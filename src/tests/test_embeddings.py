@@ -6,7 +6,6 @@ from lex_db.embeddings import (
     TextType,
     get_embedding_dimensions,
     generate_embeddings,
-    create_text_batches,
 )
 
 
@@ -155,30 +154,3 @@ class TestGenerateQueryEmbedding:
         """Test empty query text raises error."""
         with pytest.raises(ValueError, match="empty/whitespace-only texts"):
             generate_embeddings([("", TextType.QUERY)], mock_embedding_model)
-
-
-class TestCreateTextBatches:
-    """Tests for create_text_batches function."""
-
-    def test_single_batch(self) -> None:
-        """Test texts fit in single batch."""
-        texts = ["text1", "text2", "text3"]
-        batches = create_text_batches(texts, batch_size=10)
-
-        assert len(batches) == 1
-        assert batches[0] == texts
-
-    def test_multiple_batches(self) -> None:
-        """Test texts split into multiple batches."""
-        texts = ["text1", "text2", "text3", "text4", "text5"]
-        batches = create_text_batches(texts, batch_size=2)
-
-        assert len(batches) == 3
-        assert batches[0] == ["text1", "text2"]
-        assert batches[1] == ["text3", "text4"]
-        assert batches[2] == ["text5"]
-
-    def test_empty_texts(self) -> None:
-        """Test empty texts list returns empty batches."""
-        batches = create_text_batches([], batch_size=10)
-        assert batches == []
