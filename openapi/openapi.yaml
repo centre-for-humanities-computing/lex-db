@@ -182,7 +182,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/text-search/batch:
+  /api/text-search/indexes/{index_name}/batch:
     post:
       tags:
       - lex-db
@@ -192,13 +192,11 @@ paths:
       operationId: batch_fulltext_search
       parameters:
       - name: index_name
-        in: query
+        in: path
         required: true
         schema:
           type: string
-          description: Name of the vector index to search chunks in
           title: Index Name
-        description: Name of the vector index to search chunks in
       requestBody:
         required: true
         content:
@@ -213,7 +211,9 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/RetrievalResult'
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/RetrievalResult'
                 title: Response Batch Fulltext Search
         '422':
           description: Validation Error
@@ -517,6 +517,16 @@ components:
         score:
           type: number
           title: Score
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
       type: object
       required:
       - id
@@ -643,6 +653,16 @@ components:
         distance:
           type: number
           title: Distance
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
       type: object
       required:
       - id_in_index

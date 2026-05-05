@@ -323,6 +323,9 @@ class TestSearchVectorIndex:
                 "chunk_sequence_id": 0,
                 "chunk_text": "Test chunk",
                 "distance": 0.15,
+                "encyclopedia_id": 1,
+                "permalink": "test-article",
+                "headword": "Test Article",
             }
         ]
         mock_db_connection.execute.return_value.fetchall.return_value = search_rows
@@ -343,6 +346,8 @@ class TestSearchVectorIndex:
         assert results[0].results[0].source_article_id == "123"
         assert results[0].results[0].chunk_text == "Test chunk"
         assert results[0].results[0].distance == 0.15
+        assert results[0].results[0].url == "https://denstoredanske.lex.dk/test-article"
+        assert results[0].results[0].title == "Test Article"
 
     @patch("lex_db.vector_store.generate_embeddings")
     def test_search_no_results(
