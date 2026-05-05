@@ -131,6 +131,8 @@ def fuse_results_rrf(
                 chunk_sequence=res_list[0].chunk_sequence,
                 chunk_text=res_list[0].chunk_text,
                 score=score,
+                url=res_list[0].url,
+                title=res_list[0].title,
             )
         )
 
@@ -309,6 +311,8 @@ def hybrid_search(
                     chunk_sequence=r.chunk_seq,
                     chunk_text=r.chunk_text,
                     score=r.distance,
+                    url=r.url,
+                    title=r.title,
                 )
                 for r in res.results
             ]

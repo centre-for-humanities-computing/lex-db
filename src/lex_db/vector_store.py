@@ -2,10 +2,11 @@
 
 from psycopg import Connection
 from psycopg import sql
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel
 from lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
+from lex_db.database import get_url_base
 from lex_db.embeddings import (
     EmbeddingModel,
     TextType,
@@ -382,6 +383,8 @@ class VectorSearchResult(BaseModel):
     chunk_seq: int
     chunk_text: str
     distance: float
+    url: Optional[str] = None
+    title: Optional[str] = None
 
 
 class VectorSearchResults(BaseModel):
@@ -409,17 +412,21 @@ def search_vector_index(
     results = []
     for query_vector in embeddings:
         # pgvector query using cosine distance operator (<=>)
-        # The query vector is passed twice because we use it in both SELECT and ORDER BY
+        # JOIN with articles table to get url and title for each result
         result = db_conn.execute(
             sql.SQL("""
                 SELECT 
-                    id,
-                    source_article_id,
-                    chunk_sequence_id,
-                    chunk_text,
-                    embedding <=> %s::vector AS distance
-                FROM {}
-                ORDER BY embedding <=> %s::vector
+                    vi.id,
+                    vi.source_article_id,
+                    vi.chunk_sequence_id,
+                    vi.chunk_text,
+                    vi.embedding <=> %s::vector AS distance,
+                    a.permalink,
+                    a.headword,
+                    a.encyclopedia_id
+                FROM {} vi
+                LEFT JOIN articles a ON vi.source_article_id = a.id
+                ORDER BY vi.embedding <=> %s::vector
                 LIMIT %s
             """).format(sql.Identifier(vector_index_name)),
             (query_vector, query_vector, top_k),
@@ -437,6 +444,12 @@ def search_vector_index(
                     chunk_seq=res["chunk_sequence_id"],  # type: ignore[call-overload]
                     chunk_text=res["chunk_text"],  # type: ignore[call-overload]
                     distance=res["distance"],  # type: ignore[call-overload]
+                    url=get_url_base(int(res["encyclopedia_id"])) + res["permalink"]  # type: ignore[call-overload]
+                    if res["encyclopedia_id"] and res["permalink"]
+                    else None,
+                    title=res["headword"]  # type: ignore[call-overload]
+                    if res["headword"]
+                    else None,
                 )
                 for res in query_result
             ]
@@ -454,6 +467,8 @@ class RetrievalResult(BaseModel):
     chunk_sequence: int
     chunk_text: str
     score: float
+    url: Optional[str] = None
+    title: Optional[str] = None
 
 
 def search_fts_chunks(

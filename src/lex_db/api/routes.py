@@ -257,16 +257,14 @@ async def hyde_search(
 
 
 @router.post(
-    "/text-search/batch",
+    "/text-search/indexes/{index_name}/batch",
     operation_id="batch_fulltext_search",
     summary="Batch fulltext search across vector index chunks",
 )
 async def batch_fulltext_search(
+    index_name: str,
     request: BatchFulltextSearchRequest,
-    index_name: str = Query(
-        ..., description="Name of the vector index to search chunks in"
-    ),
-) -> list[RetrievalResult]:
+) -> list[list[RetrievalResult]]:
     """Perform batch fulltext search on vector index chunks using Danish FTS."""
     try:
         logger.info(
@@ -277,17 +275,21 @@ async def batch_fulltext_search(
             meta = get_vector_index_metadata(conn, index_name)
             if not meta:
                 raise HTTPException(
-                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                    status_code=404,
+                    detail=f"Vector index '{index_name}' not found",
                 )
 
-            results = search_fts_chunks(
-                db_conn=conn,
-                vector_index_name=index_name,
-                queries=request.queries,
-                top_k=request.top_k,
-            )
+            results_per_query: list[list[RetrievalResult]] = []
+            for query in request.queries:
+                results = search_fts_chunks(
+                    db_conn=conn,
+                    vector_index_name=index_name,
+                    queries=[query],
+                    top_k=request.top_k,
+                )
+                results_per_query.append(results)
 
-            return results
+            return results_per_query
 
     except ValueError as e:
         logger.error(f"Validation error in batch fulltext search: {str(e)}")
