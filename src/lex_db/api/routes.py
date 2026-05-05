@@ -8,8 +8,10 @@ from lex_db.embeddings import EmbeddingModel, TextType
 from lex_db.utils import get_logger
 import lex_db.database as db
 from lex_db.vector_store import (
+    RetrievalResult,
     VectorSearchResults,
     search_vector_index,
+    search_fts_chunks,
     get_all_vector_index_metadata,
     get_vector_index_metadata,
 )
@@ -47,7 +49,11 @@ class VectorSearchRequest(BaseModel):
 
 
 class HybridSearchRequest(BaseModel):
-    """Hybrid search request model."""
+    """Hybrid search request model.
+
+    .. deprecated::
+        Use batch semantic search and/or batch fulltext search endpoints instead.
+    """
 
     query_text: str
     top_k: int = 10
@@ -58,6 +64,20 @@ class HybridSearchRequest(BaseModel):
         advanced_search.SearchMethod.SEMANTIC,
         advanced_search.SearchMethod.FULLTEXT,
     ]
+
+
+class BatchVectorSearchRequest(BaseModel):
+    """Batch vector search request model."""
+
+    queries: list[tuple[str, TextType]]
+    top_k: int = 5
+
+
+class BatchFulltextSearchRequest(BaseModel):
+    """Batch fulltext search request model."""
+
+    queries: list[str]
+    top_k: int = 50
 
 
 @router.post(
@@ -97,9 +117,46 @@ async def vector_search(
 
 
 @router.post(
+    "/vector-search/indexes/{index_name}/batch",
+    operation_id="batch_vector_search",
+    summary="Batch search a vector index for similar content to multiple query texts",
+)
+async def batch_vector_search(
+    index_name: str, request: BatchVectorSearchRequest
+) -> list[VectorSearchResults]:
+    """Search a vector index for similar content to multiple query texts in batch."""
+    try:
+        with db.get_db_connection() as conn:
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+            embedding_model = meta["embedding_model"]
+            logger.info(
+                f"Batch searching index '{index_name}' for {len(request.queries)} queries using model {embedding_model}"
+            )
+            results = search_vector_index(
+                db_conn=conn,
+                vector_index_name=index_name,
+                queries=request.queries,
+                embedding_model=embedding_model,
+                top_k=request.top_k,
+            )
+            return results
+    except ValueError as e:
+        logger.error(f"Validation error in batch vector search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in batch vector search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@router.post(
     "/hybrid-search/indexes/{index_name}/query",
     operation_id="hybrid_search",
-    summary="Hybrid search combining semantic and keyword search with RRF fusion",
+    summary="[DEPRECATED] Hybrid search combining semantic and keyword search with RRF fusion. Use batch semantic and/or batch fulltext search instead.",
+    deprecated=True,
 )
 async def hybrid_search(
     index_name: str, request: HybridSearchRequest
@@ -162,7 +219,8 @@ async def hybrid_search(
 @router.post(
     "/hyde-search/indexes/{index_name}/query",
     operation_id="hyde_search",
-    summary="HyDE search using LLM-generated hypothetical document",
+    summary="[DEPRECATED] HyDE search using LLM-generated hypothetical document. Use batch semantic search instead.",
+    deprecated=True,
 )
 async def hyde_search(
     index_name: str, request: VectorSearchRequest
@@ -196,6 +254,49 @@ async def hyde_search(
     except Exception as e:
         logger.error(f"Error in HyDE search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"HyDE search error: {str(e)}")
+
+
+@router.post(
+    "/text-search/batch",
+    operation_id="batch_fulltext_search",
+    summary="Batch fulltext search across vector index chunks",
+)
+async def batch_fulltext_search(
+    request: BatchFulltextSearchRequest,
+    index_name: str = Query(
+        ..., description="Name of the vector index to search chunks in"
+    ),
+) -> list[RetrievalResult]:
+    """Perform batch fulltext search on vector index chunks using Danish FTS."""
+    try:
+        logger.info(
+            f"Batch fulltext search on '{index_name}' for {len(request.queries)} queries"
+        )
+        with db.get_db_connection() as conn:
+            # Verify vector index exists
+            meta = get_vector_index_metadata(conn, index_name)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Vector index '{index_name}' not found"
+                )
+
+            results = search_fts_chunks(
+                db_conn=conn,
+                vector_index_name=index_name,
+                queries=request.queries,
+                top_k=request.top_k,
+            )
+
+            return results
+
+    except ValueError as e:
+        logger.error(f"Validation error in batch fulltext search: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in batch fulltext search: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Batch fulltext search error: {str(e)}"
+        )
 
 
 @router.get(
