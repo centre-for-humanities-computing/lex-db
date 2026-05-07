@@ -504,16 +504,21 @@ def search_fts_chunks(
 
         # Use plainto_tsquery for natural language queries
         # It handles tokenization and Danish stemming automatically
+        # JOIN with articles table to get url and title for each result
         result = db_conn.execute(
             sql.SQL("""
                 SELECT
-                    id,
-                    source_article_id,
-                    chunk_sequence_id,
-                    chunk_text,
-                    ts_rank(chunk_text_tsv, plainto_tsquery('danish', %s)) AS score
-                FROM {}
-                WHERE chunk_text_tsv @@ plainto_tsquery('danish', %s)
+                    vi.id,
+                    vi.source_article_id,
+                    vi.chunk_sequence_id,
+                    vi.chunk_text,
+                    ts_rank(vi.chunk_text_tsv, plainto_tsquery('danish', %s)) AS score,
+                    a.permalink,
+                    a.headword,
+                    a.encyclopedia_id
+                FROM {} vi
+                LEFT JOIN articles a ON vi.source_article_id = a.id
+                WHERE vi.chunk_text_tsv @@ plainto_tsquery('danish', %s)
                 ORDER BY score DESC
                 LIMIT %s
             """).format(sql.Identifier(vector_index_name)),
@@ -528,6 +533,12 @@ def search_fts_chunks(
                     chunk_sequence=row["chunk_sequence_id"],  # type: ignore[call-overload]
                     chunk_text=row["chunk_text"],  # type: ignore[call-overload]
                     score=row["score"],  # type: ignore[call-overload]
+                    url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"]  # type: ignore[call-overload]
+                    if row["encyclopedia_id"] and row["permalink"]
+                    else None,
+                    title=row["headword"]  # type: ignore[call-overload]
+                    if row["headword"]
+                    else None,
                 )
             )
 
