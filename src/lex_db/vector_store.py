@@ -385,6 +385,7 @@ class VectorSearchResult(BaseModel):
     distance: float
     url: Optional[str] = None
     title: Optional[str] = None
+    changed_at: Optional[str] = None
 
 
 class VectorSearchResults(BaseModel):
@@ -423,7 +424,8 @@ def search_vector_index(
                     vi.embedding <=> %s::vector AS distance,
                     a.permalink,
                     a.headword,
-                    a.encyclopedia_id
+                    a.encyclopedia_id,
+                    a.changed_at
                 FROM {} vi
                 LEFT JOIN articles a ON vi.source_article_id = a.id
                 ORDER BY vi.embedding <=> %s::vector
@@ -450,6 +452,9 @@ def search_vector_index(
                     title=res["headword"]  # type: ignore[call-overload]
                     if res["headword"]
                     else None,
+                    changed_at=res["changed_at"]  # type: ignore[call-overload]
+                    if res["changed_at"]
+                    else None,
                 )
                 for res in query_result
             ]
@@ -469,6 +474,7 @@ class RetrievalResult(BaseModel):
     score: float
     url: Optional[str] = None
     title: Optional[str] = None
+    changed_at: Optional[str] = None
 
 
 def search_fts_chunks(
@@ -515,7 +521,8 @@ def search_fts_chunks(
                     ts_rank(vi.chunk_text_tsv, plainto_tsquery('danish', %s)) AS score,
                     a.permalink,
                     a.headword,
-                    a.encyclopedia_id
+                    a.encyclopedia_id,
+                    a.changed_at
                 FROM {} vi
                 LEFT JOIN articles a ON vi.source_article_id = a.id
                 WHERE vi.chunk_text_tsv @@ plainto_tsquery('danish', %s)
@@ -538,6 +545,9 @@ def search_fts_chunks(
                     else None,
                     title=row["headword"]  # type: ignore[call-overload]
                     if row["headword"]
+                    else None,
+                    changed_at=row["changed_at"]  # type: ignore[call-overload]
+                    if row["changed_at"]
                     else None,
                 )
             )

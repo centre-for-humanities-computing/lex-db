@@ -326,6 +326,7 @@ class TestSearchVectorIndex:
                 "encyclopedia_id": 1,
                 "permalink": "test-article",
                 "headword": "Test Article",
+                "changed_at": "2024-01-01",
             }
         ]
         mock_db_connection.execute.return_value.fetchall.return_value = search_rows
@@ -348,6 +349,7 @@ class TestSearchVectorIndex:
         assert results[0].results[0].distance == 0.15
         assert results[0].results[0].url == "https://denstoredanske.lex.dk/test-article"
         assert results[0].results[0].title == "Test Article"
+        assert results[0].results[0].changed_at == "2024-01-01"
 
     @patch("lex_db.vector_store.generate_embeddings")
     def test_search_no_results(
