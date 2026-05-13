@@ -17,6 +17,7 @@ import time
 from collections import deque
 from threading import Lock
 import tiktoken
+import requests
 from sentence_transformers import SentenceTransformer
 from lex_db.utils import get_logger
 from lex_db.config import get_settings
@@ -604,6 +605,191 @@ class JinaV5ModelHandler:
 
 
 # =============================================================================
+# Remote Inference Server Client
+# =============================================================================
+
+
+def _format_texts_for_model(
+    model_choice: EmbeddingModel, texts: list[tuple[str, TextType]]
+) -> list[str]:
+    """Format texts with model-specific prefixes for the inference server.
+
+    This ensures the inference server produces the same embeddings as local
+    computation would, by applying the same prefixes (e.g. "query: " for E5,
+    "Query: "/"Document: " for Jina).
+    """
+    if model_choice in (
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL,
+        EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
+    ):
+        return [f"{text_type.value}: {text}" for text, text_type in texts]
+    elif model_choice in (EmbeddingModel.JINA_V5_SMALL, EmbeddingModel.JINA_V5_NANO):
+        formatted = []
+        for text, text_type in texts:
+            if text_type == TextType.QUERY:
+                formatted.append(f"Query: {text}")
+            else:
+                formatted.append(f"Document: {text}")
+        return formatted
+    else:
+        raise ValueError(f"No text formatting for model: {model_choice}")
+
+
+# Mapping from EmbeddingModel to the inference server's model name and endpoint path
+_INFERENCE_SERVER_MODEL_MAP: dict[EmbeddingModel, tuple[str, str]] = {
+    EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE: (
+        "multilingual-e5-large",
+        "/embeddings/e5/v1/embeddings",
+    ),
+    EmbeddingModel.JINA_V5_SMALL: (
+        "jina-v5-small",
+        "/embeddings/jina/v1/embeddings",
+    ),
+}
+
+
+class RemoteEmbeddingClient:
+    """Client for generating embeddings via a remote inference server.
+
+    The inference server exposes an OpenAI-compatible /v1/embeddings endpoint.
+    This client formats requests appropriately and handles retries with
+    exponential backoff before falling back to local computation.
+    """
+
+    def __init__(self, base_url: str, timeout: int = 30, max_retries: int = 2):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    def generate_embeddings(
+        self,
+        texts: list[tuple[str, TextType]],
+        model_choice: EmbeddingModel,
+    ) -> list[list[float]]:
+        """Generate embeddings via the remote inference server.
+
+        Args:
+            texts: List of (text, text_type) tuples.
+            model_choice: The embedding model to use.
+
+        Returns:
+            List of embedding vectors.
+
+        Raises:
+            ConnectionError: If the server is unreachable after all retries.
+            ValueError: If the model is not supported by the inference server.
+        """
+        if model_choice not in _INFERENCE_SERVER_MODEL_MAP:
+            raise ValueError(
+                f"Model {model_choice} is not supported by the inference server. "
+                f"Supported models: {list(_INFERENCE_SERVER_MODEL_MAP.keys())}"
+            )
+
+        model_name, endpoint_path = _INFERENCE_SERVER_MODEL_MAP[model_choice]
+        url = f"{self.base_url}{endpoint_path}"
+
+        # Format texts with model-specific prefixes so the inference server
+        # produces the same embeddings as local computation would.
+        formatted_texts = _format_texts_for_model(model_choice, texts)
+
+        # Process in batches to avoid oversized requests
+        batch_size = 64
+        all_embeddings: list[list[float]] = []
+
+        for i in range(0, len(formatted_texts), batch_size):
+            batch = formatted_texts[i : i + batch_size]
+            batch_embeddings = self._request_with_retries(url, model_name, batch)
+            all_embeddings.extend(batch_embeddings)
+
+        return all_embeddings
+
+    def _request_with_retries(
+        self,
+        url: str,
+        model_name: str,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Send a request with exponential backoff retries."""
+        last_exception: Exception | None = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self._send_request(url, model_name, texts)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    wait_time = 2**attempt
+                    logger.warning(
+                        f"Inference server request failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                        f"{type(e).__name__}: {e}. Retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
+            except requests.HTTPError as e:
+                # Don't retry client errors (4xx) except 429 (rate limit)
+                if e.response is not None and e.response.status_code == 429:
+                    last_exception = e
+                    if attempt < self.max_retries:
+                        wait_time = 2 ** (attempt + 1)  # longer backoff for rate limits
+                        logger.warning(
+                            f"Inference server rate limited (attempt {attempt + 1}/{self.max_retries + 1}). "
+                            f"Retrying in {wait_time}s..."
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        raise
+                else:
+                    raise
+
+        raise ConnectionError(
+            f"Inference server unreachable after {self.max_retries + 1} attempts: {last_exception}"
+        ) from last_exception
+
+    def _send_request(
+        self,
+        url: str,
+        model_name: str,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Send a single embedding request to the inference server."""
+        payload = {
+            "model": model_name,
+            "input": texts,
+        }
+
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+
+        # OpenAI-compatible response format: {"data": [{"embedding": [...], "index": 0}, ...]}
+        # Sort by index to ensure order is preserved
+        sorted_data = sorted(data["data"], key=lambda x: x["index"])
+        return [item["embedding"] for item in sorted_data]
+
+
+# Global remote client instance (lazy-initialized)
+_remote_client: RemoteEmbeddingClient | None = None
+
+
+def get_remote_client() -> RemoteEmbeddingClient:
+    """Get or create the global remote embedding client."""
+    global _remote_client
+    if _remote_client is None:
+        settings = get_settings()
+        _remote_client = RemoteEmbeddingClient(
+            base_url=settings.INFERENCE_SERVER_URL,
+            timeout=settings.INFERENCE_SERVER_TIMEOUT,
+            max_retries=settings.INFERENCE_SERVER_MAX_RETRIES,
+        )
+    return _remote_client
+
+
+# =============================================================================
 # Handler Registry
 # =============================================================================
 
@@ -739,13 +925,63 @@ def generate_embeddings(
             for _ in texts
         ]
 
-    # Handle local models (E5 and Jina)
+    # Handle local models (E5 and Jina) — try inference server first, fall back to local
     if model_choice in (
         EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE,
         EmbeddingModel.LOCAL_MULTILINGUAL_E5_SMALL,
         EmbeddingModel.JINA_V5_SMALL,
         EmbeddingModel.JINA_V5_NANO,
     ):
+        settings = get_settings()
+
+        # Try the remote inference server first if enabled and model is supported
+        if (
+            settings.INFERENCE_SERVER_ENABLED
+            and model_choice in _INFERENCE_SERVER_MODEL_MAP
+        ):
+            try:
+                client = get_remote_client()
+                logger.info(
+                    f"Generating {len(texts)} embeddings via inference server "
+                    f"(model: {model_choice.value})"
+                )
+                embeddings = client.generate_embeddings(texts, model_choice)
+                if len(embeddings) == len(texts):
+                    logger.info(
+                        f"Successfully generated {len(embeddings)} embeddings "
+                        f"via inference server"
+                    )
+                    return embeddings
+                else:
+                    logger.warning(
+                        f"Inference server returned {len(embeddings)} embeddings "
+                        f"for {len(texts)} texts. Falling back to local computation."
+                    )
+            except (ConnectionError, requests.ConnectionError, requests.Timeout) as e:
+                logger.warning(
+                    f"Inference server unavailable: {type(e).__name__}: {e}. "
+                    f"Falling back to local computation."
+                )
+            except requests.HTTPError as e:
+                logger.warning(
+                    f"Inference server returned HTTP error: {e}. "
+                    f"Falling back to local computation."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Unexpected error with inference server: {type(e).__name__}: {e}. "
+                    f"Falling back to local computation."
+                )
+        elif (
+            settings.INFERENCE_SERVER_ENABLED
+            and model_choice not in _INFERENCE_SERVER_MODEL_MAP
+        ):
+            logger.info(
+                f"Model {model_choice.value} not available on inference server, "
+                f"using local computation."
+            )
+
+        # Local computation (fallback or primary for unsupported models)
         model_data = get_local_embedding_model(model_choice)
         model = model_data["model"]
         tokenizer = model_data["tokenizer"]
@@ -753,7 +989,6 @@ def generate_embeddings(
         handler = model_data["handler"]
 
         # Use larger batch size for GPU, smaller for CPU
-        settings = get_settings()
         batch_size = settings.GPU_BATCH_SIZE if use_gpu else settings.CPU_BATCH_SIZE
 
         all_embeddings = []
@@ -786,7 +1021,7 @@ def generate_embeddings(
             if not api_key:
                 raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY.")
 
-            client = OpenAI(api_key=api_key)
+            openai_client = OpenAI(api_key=api_key)
             model_name = model_choice.value
 
             batches = create_optimal_request_batches(
@@ -802,7 +1037,9 @@ def generate_embeddings(
                 batch_idx, batch = batch_idx_batch
                 try:
                     _openai_rate_limiter.wait_if_needed(batch)
-                    response = client.embeddings.create(input=batch, model=model_name)
+                    response = openai_client.embeddings.create(
+                        input=batch, model=model_name
+                    )
                     embeddings = [item.embedding for item in response.data]
                     logger.debug(
                         f"Batch {batch_idx} completed with {len(embeddings)} embeddings."
