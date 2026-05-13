@@ -1,5 +1,7 @@
 """Unit tests for vector_store module."""
 
+from datetime import datetime
+
 import pytest
 from unittest.mock import MagicMock, patch
 from lex_db.vector_store import (
@@ -349,7 +351,7 @@ class TestSearchVectorIndex:
         assert results[0].results[0].distance == 0.15
         assert results[0].results[0].url == "https://denstoredanske.lex.dk/test-article"
         assert results[0].results[0].title == "Test Article"
-        assert results[0].results[0].changed_at == "2024-01-01"
+        assert results[0].results[0].changed_at == datetime.fromisoformat("2024-01-01")
 
     @patch("lex_db.vector_store.generate_embeddings")
     def test_search_no_results(

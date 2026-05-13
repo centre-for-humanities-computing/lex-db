@@ -1,5 +1,7 @@
 """Vector store operations for Lex DB."""
 
+from datetime import datetime
+
 from psycopg import Connection
 from psycopg import sql
 from typing import Any, Optional
@@ -385,7 +387,7 @@ class VectorSearchResult(BaseModel):
     distance: float
     url: Optional[str] = None
     title: Optional[str] = None
-    changed_at: Optional[str] = None
+    changed_at: Optional[datetime] = None
 
 
 class VectorSearchResults(BaseModel):
@@ -474,7 +476,7 @@ class RetrievalResult(BaseModel):
     score: float
     url: Optional[str] = None
     title: Optional[str] = None
-    changed_at: Optional[str] = None
+    changed_at: Optional[datetime] = None
 
 
 def search_fts_chunks(

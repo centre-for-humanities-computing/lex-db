@@ -530,6 +530,7 @@ components:
         changed_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Changed At
       type: object
@@ -671,6 +672,7 @@ components:
         changed_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Changed At
       type: object
