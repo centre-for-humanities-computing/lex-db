@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     CPU_BATCH_SIZE: int = 16  # Batch size for CPU inference
     CPU_NUM_THREADS: int = 4  # Number of threads for CPU inference
 
+    # Inference server settings
+    INFERENCE_SERVER_URL: str = "http://temp-spark1-llm.au.dk.au.dk"
+    INFERENCE_SERVER_ENABLED: bool = True  # Set to False to always use local models
+    INFERENCE_SERVER_TIMEOUT: int = 30  # Request timeout in seconds
+    INFERENCE_SERVER_MAX_RETRIES: int = 2  # Max retries before falling back to local
+
     # Sitemap settings
     SITEMAP_BASE_URL: str = "https://lex.dk/.sitemap"
     SITEMAP_REQUEST_TIMEOUT: int = 30
