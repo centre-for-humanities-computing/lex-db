@@ -647,6 +647,12 @@ _INFERENCE_SERVER_MODEL_MAP: dict[EmbeddingModel, tuple[str, str]] = {
     ),
 }
 
+# Max tokens per model for the inference server (leave margin below the true limit)
+_INFERENCE_SERVER_MAX_TOKENS: dict[EmbeddingModel, int] = {
+    EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE: 500,
+    EmbeddingModel.JINA_V5_SMALL: 30000,
+}
+
 
 class RemoteEmbeddingClient:
     """Client for generating embeddings via a remote inference server.
@@ -655,6 +661,9 @@ class RemoteEmbeddingClient:
     This client formats requests appropriately and handles retries with
     exponential backoff before falling back to local computation.
     """
+
+    # Cache of model-specific tokenizers for truncation (lazy-loaded)
+    _tokenizers: dict[EmbeddingModel, "PreTrainedTokenizerBase"] = {}
 
     def __init__(self, base_url: str, timeout: int = 30, max_retries: int = 2):
         self.base_url = base_url.rstrip("/")
@@ -686,11 +695,23 @@ class RemoteEmbeddingClient:
             )
 
         model_name, endpoint_path = _INFERENCE_SERVER_MODEL_MAP[model_choice]
+        max_tokens = _INFERENCE_SERVER_MAX_TOKENS.get(model_choice)
         url = f"{self.base_url}{endpoint_path}"
 
         # Format texts with model-specific prefixes so the inference server
         # produces the same embeddings as local computation would.
         formatted_texts = _format_texts_for_model(model_choice, texts)
+
+        # Truncate texts that exceed the model's token limit using the
+        # actual model tokenizer (not tiktoken which gives wrong counts).
+        # Local models implicitly handle this via mean pooling, but the
+        # inference server enforces a strict limit and returns 400.
+        if max_tokens is not None:
+            tokenizer = self._get_model_tokenizer(model_choice)
+            formatted_texts = [
+                self._truncate_to_tokens(t, max_tokens, tokenizer)
+                for t in formatted_texts
+            ]
 
         # Process in batches to avoid oversized requests
         batch_size = 64
@@ -702,6 +723,30 @@ class RemoteEmbeddingClient:
             all_embeddings.extend(batch_embeddings)
 
         return all_embeddings
+
+    @classmethod
+    def _get_model_tokenizer(
+        cls, model_choice: EmbeddingModel
+    ) -> "PreTrainedTokenizerBase":
+        """Get or lazy-load the tokenizer for a model (used for truncation only)."""
+        if model_choice not in cls._tokenizers:
+            model_name = model_choice.value
+            cls._tokenizers[model_choice] = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True
+            )
+        return cls._tokenizers[model_choice]
+
+    @staticmethod
+    def _truncate_to_tokens(
+        text: str,
+        max_tokens: int,
+        tokenizer: "PreTrainedTokenizerBase",
+    ) -> str:
+        """Truncate text to fit within max_tokens using the model's tokenizer."""
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        if len(tokens) <= max_tokens:
+            return text
+        return tokenizer.decode(tokens[:max_tokens], skip_special_tokens=True)
 
     def _request_with_retries(
         self,
