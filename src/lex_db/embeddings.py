@@ -639,11 +639,11 @@ def _format_texts_for_model(
 _INFERENCE_SERVER_MODEL_MAP: dict[EmbeddingModel, tuple[str, str]] = {
     EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE: (
         "multilingual-e5-large",
-        "/embeddings/e5/v1/embeddings",
+        "/multilingual-e5-large/v1/embeddings",
     ),
     EmbeddingModel.JINA_V5_SMALL: (
         "jina-v5-small",
-        "/embeddings/jina/v1/embeddings",
+        "/jina-v5-small/v1/embeddings",
     ),
 }
 
