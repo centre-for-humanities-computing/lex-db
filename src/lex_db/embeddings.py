@@ -665,8 +665,15 @@ class RemoteEmbeddingClient:
     # Cache of model-specific tokenizers for truncation (lazy-loaded)
     _tokenizers: dict[EmbeddingModel, "PreTrainedTokenizerBase"] = {}
 
-    def __init__(self, base_url: str, timeout: int = 30, max_retries: int = 2):
+    def __init__(
+        self,
+        base_url: str,
+        x_auth_token: str = "",
+        timeout: int = 30,
+        max_retries: int = 2,
+    ):
         self.base_url = base_url.rstrip("/")
+        self.x_auth_token = x_auth_token
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -804,7 +811,10 @@ class RemoteEmbeddingClient:
         response = requests.post(
             url,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **({"X-auth-token": self.x_auth_token} if self.x_auth_token else {}),
+            },
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -828,6 +838,7 @@ def get_remote_client() -> RemoteEmbeddingClient:
         settings = get_settings()
         _remote_client = RemoteEmbeddingClient(
             base_url=settings.INFERENCE_SERVER_URL,
+            x_auth_token=settings.INFERENCE_SERVER_XAUTH,
             timeout=settings.INFERENCE_SERVER_TIMEOUT,
             max_retries=settings.INFERENCE_SERVER_MAX_RETRIES,
         )
@@ -984,39 +995,49 @@ def generate_embeddings(
             settings.INFERENCE_SERVER_ENABLED
             and model_choice in _INFERENCE_SERVER_MODEL_MAP
         ):
-            try:
-                client = get_remote_client()
-                logger.info(
-                    f"Generating {len(texts)} embeddings via inference server "
-                    f"(model: {model_choice.value})"
+            if not settings.INFERENCE_SERVER_XAUTH:
+                logger.warning(
+                    "INFERENCE_SERVER_ENABLED is True but INFERENCE_SERVER_XAUTH is not set. "
+                    "Falling back to local computation."
                 )
-                embeddings = client.generate_embeddings(texts, model_choice)
-                if len(embeddings) == len(texts):
+            else:
+                try:
+                    client = get_remote_client()
                     logger.info(
-                        f"Successfully generated {len(embeddings)} embeddings "
-                        f"via inference server"
+                        f"Generating {len(texts)} embeddings via inference server "
+                        f"(model: {model_choice.value})"
                     )
-                    return embeddings
-                else:
+                    embeddings = client.generate_embeddings(texts, model_choice)
+                    if len(embeddings) == len(texts):
+                        logger.info(
+                            f"Successfully generated {len(embeddings)} embeddings "
+                            f"via inference server"
+                        )
+                        return embeddings
+                    else:
+                        logger.warning(
+                            f"Inference server returned {len(embeddings)} embeddings "
+                            f"for {len(texts)} texts. Falling back to local computation."
+                        )
+                except (
+                    ConnectionError,
+                    requests.ConnectionError,
+                    requests.Timeout,
+                ) as e:
                     logger.warning(
-                        f"Inference server returned {len(embeddings)} embeddings "
-                        f"for {len(texts)} texts. Falling back to local computation."
+                        f"Inference server unavailable: {type(e).__name__}: {e}. "
+                        f"Falling back to local computation."
                     )
-            except (ConnectionError, requests.ConnectionError, requests.Timeout) as e:
-                logger.warning(
-                    f"Inference server unavailable: {type(e).__name__}: {e}. "
-                    f"Falling back to local computation."
-                )
-            except requests.HTTPError as e:
-                logger.warning(
-                    f"Inference server returned HTTP error: {e}. "
-                    f"Falling back to local computation."
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Unexpected error with inference server: {type(e).__name__}: {e}. "
-                    f"Falling back to local computation."
-                )
+                except requests.HTTPError as e:
+                    logger.warning(
+                        f"Inference server returned HTTP error: {e}. "
+                        f"Falling back to local computation."
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Unexpected error with inference server: {type(e).__name__}: {e}. "
+                        f"Falling back to local computation."
+                    )
         elif (
             settings.INFERENCE_SERVER_ENABLED
             and model_choice not in _INFERENCE_SERVER_MODEL_MAP
