@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     INFERENCE_SERVER_ENABLED: bool = True  # Set to False to always use local models
     INFERENCE_SERVER_TIMEOUT: int = 30  # Request timeout in seconds
     INFERENCE_SERVER_MAX_RETRIES: int = 2  # Max retries before falling back to local
+    INFERENCE_SERVER_XAUTH: str = ""  # X-auth-token for inference server authentication
 
     # Sitemap settings
     SITEMAP_BASE_URL: str = "https://lex.dk/.sitemap"
