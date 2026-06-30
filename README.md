@@ -1,342 +1,281 @@
 # lex-db
-A repository for interacting with the lex database for the Lex AI project. This project provides a wrapper around a PostgreSQL database to enable querying encyclopedia articles via API requests, supporting both **vector (semantic) search** and **full-text/keyword search**.
+
+A PostgreSQL-backed API for the Lex AI project. Provides vector (semantic) search, full-text search, and article management for Danish encyclopedia articles from [lex.dk](https://lex.dk).
+
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Usage](#usage)
+  - [Running the API](#running-the-api)
+  - [API Endpoints](#api-endpoints)
+  - [Database Migration (SQLite → PostgreSQL)](#database-migration-sqlite--postgresql)
+  - [Managing Vector Indexes](#managing-vector-indexes)
+  - [Syncing Articles from lex.dk](#syncing-articles-from-lexdk)
+- [Development](#development)
+- [Project Structure](#project-structure)
 
 ## Features
-- PostgreSQL database with pgvector extension for vector search
-- Full-text search capabilities using PostgreSQL native FTS with Danish language support
-- FastAPI-based REST API with automatic OpenAPI documentation
-- Hybrid querying via metadata filtering and text search
-- Vector index management and semantic search
-- Connection pooling for efficient database access
+
+- PostgreSQL + pgvector for vector similarity search (HNSW indexes)
+- PostgreSQL native full-text search with Danish language support
+- FastAPI REST API with auto-generated OpenAPI 3.1 docs
+- Batch vector and full-text search endpoints
+- Multiple embedding models: local (E5, Jina) and OpenAI
+- ONNX Runtime with INT8 quantization for CPU; native transformers for GPU
+- Automatic GPU detection (CUDA)
+- Connection pooling via psycopg
+- Article synchronization from lex.dk sitemaps
 
 ## Requirements
+
 - Python 3.12+
 - [Astral UV](https://github.com/astral-sh/uv) for package management
-- PostgreSQL 15+ with pgvector extension installed
+- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension
 
-## Installation
+## Quick Start
 
-### 1. Clone the repository
 ```bash
-git clone https://github.com/centre-for-humanities-computing/lex-db 
+# 1. Clone and install
+git clone https://github.com/centre-for-humanities-computing/lex-db
 cd lex-db
-```
-
-### 2. Install dependencies
-```bash
 make install
-```
 
-#### GPU vs CPU Installation
-
-By default, ONNX models with are used with CPU for broader compatibility.
-
-**For GPU acceleration** (NVIDIA CUDA):
-To enable GPU acceleration, set in your `.env`:
-```env
-USE_GPU=true
-```
-
-Note: GPU mode uses the transformers library directly for inference, while CPU mode uses ONNX Runtime with INT8 quantization for optimal performance.
-
-### 3. Set up PostgreSQL database
-Ensure PostgreSQL is installed and the pgvector extension is available:
-```bash
-# Install PostgreSQL and pgvector (Ubuntu/Debian)
-sudo apt-get update
-sudo apt-get install postgresql postgresql-contrib
-sudo apt-get install postgresql-15-pgvector
-
-# Or using Homebrew (macOS)
-brew install postgresql pgvector
-```
-
-### 4. Configure environment variables
-Create a `.env` file with your PostgreSQL connection details:
-```env
-# Database Configuration
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=lex_db
-DB_USER=lex_user
-DB_PASSWORD=your_password_here
-DB_SSLMODE=prefer
-
-# Connection Pooling
-DB_POOL_MIN_SIZE=2
-DB_POOL_MAX_SIZE=10
-
-# Application Settings
-APP_NAME=Lex DB API
-DEBUG=false
-
-# OpenAI API (for embeddings, optional)
-OPENAI_API_KEY=your_api_key_here
-```
-
-### 5. Initialize the database
-Run the database setup script to create tables and indexes:
-```bash
-# Create database and user (run as postgres user)
+# 2. Create PostgreSQL database and enable pgvector
 sudo -u postgres psql <<EOF
 CREATE DATABASE lex_db;
-CREATE USER lex_user WITH PASSWORD 'your_password_here';
+CREATE USER lex_user WITH PASSWORD 'your_password';
 GRANT ALL PRIVILEGES ON DATABASE lex_db TO lex_user;
 \c lex_db
 GRANT ALL ON SCHEMA public TO lex_user;
-CREATE EXTENSION vector;
+CREATE EXTENSION IF NOT EXISTS vector;
 EOF
+
+# 3. Copy and edit the environment file
+cp .env.example .env
+# Edit .env with your database credentials
+
+# 4. Initialize metadata tables
+PGPASSWORD=your_password psql -U lex_user -d lex_db -f db/schema.sql
+
+# 5. Run the API
+make run
 ```
+
+API docs available at `http://localhost:8000/docs` (Swagger) and `http://localhost:8000/redoc` (ReDoc).
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust as needed. Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_NAME` | `lex_db` | Database name |
+| `DB_USER` | `lex_user` | Database user |
+| `DB_PASSWORD` | — | Database password |
+| `DB_POOL_MIN_SIZE` | `2` | Min connection pool size |
+| `DB_POOL_MAX_SIZE` | `10` | Max connection pool size |
+| `GPU_BATCH_SIZE` | `64` | Batch size for GPU inference |
+| `CPU_BATCH_SIZE` | `16` | Batch size for CPU inference |
+| `CPU_NUM_THREADS` | `4` | ONNX Runtime thread count |
+| `INFERENCE_SERVER_URL` | — | Remote inference server (optional) |
+| `INFERENCE_SERVER_ENABLED` | `True` | Use remote server when available |
+| `INFERENCE_SERVER_XAUTH` | — | Auth token for inference server |
+| `OPENAI_API_KEY` | — | For OpenAI embedding models |
+| `OPENROUTER_API_KEY` | — | For HyDE query expansion (optional) |
+| `SITEMAP_RATE_LIMIT` | `10` | Max concurrent sitemap requests |
+| `DEBUG` | `false` | Enable debug logging & hot reload |
+
+**GPU support** is detected automatically via CUDA. No configuration needed — if a CUDA-capable GPU is available, models load in full-precision transformer mode. Otherwise, ONNX Runtime with INT8 quantization is used for CPU.
 
 ## Usage
 
-### Database Migration from SQLite
+### Running the API
 
-If you're migrating from an existing SQLite database, follow these steps:
-
-#### 1. Migrate Articles Table
-Use pgloader to migrate the articles table:
 ```bash
-# Run the migration script
+make run          # Production mode
+make run-dev      # Development mode (generates OpenAPI spec first)
+```
+
+The server listens on `0.0.0.0:8000` by default. Override with `DEPLOY_DOMAIN` and `DEPLOY_PORT` env vars.
+
+### API Endpoints
+
+#### Health
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Health check with DB info |
+
+#### Articles
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/articles?ids=1,2&query=Denmark&limit=10` | Full-text search with optional ID filter |
+
+Supports `ids` as comma-separated, repeated (`?ids=1&ids=2`), or JSON array.
+
+#### Vector Search
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/vector-search/indexes/{name}/query` | Single semantic search |
+| `POST` | `/api/vector-search/indexes/{name}/batch` | Batch semantic search |
+| `GET` | `/api/vector-search/indexes` | List all vector indexes |
+| `GET` | `/api/vector-search/indexes/{name}` | Get index metadata |
+
+#### Full-Text Search on Chunks
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/text-search/indexes/{name}/batch` | Batch FTS on vector index chunks |
+
+#### Deprecated Endpoints
+| Method | Path | Replacement |
+|---|---|---|
+| `POST` | `/api/hybrid-search/indexes/{name}/query` | Use batch semantic + batch FTS instead |
+| `POST` | `/api/hyde-search/indexes/{name}/query` | Use batch semantic search instead |
+
+#### Benchmarking
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/benchmark/embeddings` | Benchmark embedding generation speed |
+
+#### Other
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/tables` | List database tables |
+
+### Database Migration (SQLite → PostgreSQL)
+
+If migrating from the old SQLite database:
+
+```bash
+# 1. Migrate articles table via pgloader
 cd db
 ./run_migration.sh
-```
 
-This will:
-- Migrate all articles from SQLite to PostgreSQL
-- Add full-text search (FTS) column and GIN index
-- Verify the migration was successful
-
-#### 2. Export Vector Indexes from SQLite (Optional)
-If you have existing vector indexes in SQLite that you want to preserve:
-```bash
-# Export a vector index to JSONL format
+# 2. (Optional) Export vector indexes from SQLite
 uv run python -m scripts.export_sqlite_vector_index \
-    --sqlite-db db/lex.db \
+    --sqlite-db db/lex_1.5.0.db \
     --index-name e5_small \
     --output exports/e5_small.jsonl
-```
 
-#### 3. Create Vector Index in PostgreSQL
-```bash
-# Create an empty vector index structure
+# 3. Create vector index in PostgreSQL
 uv run python -m scripts.create_vector_index \
     --index-name e5_small \
     --embedding-model intfloat/multilingual-e5-small \
     --source-table articles \
     --source-column xhtml_md \
-    --chunking-strategy semantic_chunks \
-    --chunk-size 250 \
-    --chunk-overlap 30
-```
+    --chunking-strategy semantic_chunks
 
-#### 4. Import Embeddings (Optional)
-If you exported embeddings from SQLite:
-```bash
-# Import embeddings into PostgreSQL
+# 4. Import embeddings or generate new ones
 uv run python -m scripts.import_vector_embeddings \
     --jsonl-file exports/e5_small.jsonl \
-    --index-name e5_small \
-    --batch-size 1000
-```
-
-Or generate new embeddings:
-```bash
-# Generate and populate embeddings from scratch
-uv run python -m scripts.update_vector_indexes \
-    --index-name e5_small \
-    --batch-size 64
+    --index-name e5_small
 ```
 
 ### Managing Vector Indexes
 
-#### Create a New Vector Index
+#### Create an Index
+
 ```bash
 uv run python -m scripts.create_vector_index \
     --index-name my_index \
-    --embedding-model text-embedding-3-small \
+    --embedding-model intfloat/multilingual-e5-small \
     --source-table articles \
     --source-column xhtml_md \
-    --chunking-strategy semantic_chunks
+    --chunking-strategy semantic_chunks \
+    --chunk-size 512 \
+    --chunk-overlap 50
 ```
 
-Available embedding models:
-- `intfloat/multilingual-e5-small` (384 dimensions, local)
-- `intfloat/multilingual-e5-large` (1024 dimensions, local)
-- `text-embedding-ada-002` (1536 dimensions, OpenAI)
-- `text-embedding-3-small` (1536 dimensions, OpenAI)
-- `text-embedding-3-large` (3072 dimensions, OpenAI)
+Use `--force-drop` to replace an existing index.
 
-Available chunking strategies:
-- `tokens` - Token-based chunking using tiktoken
-- `characters` - Simple character-based chunking
-- `sections` - Markdown section-based chunking
-- `semantic_chunks` - Danish sentence-aware semantic chunking (recommended)
+**Embedding models:**
 
-#### Update Vector Index with New/Modified Articles
+| Model ID | Dims | Type |
+|---|---|---|
+| `intfloat/multilingual-e5-small` | 384 | Local |
+| `intfloat/multilingual-e5-large` | 1024 | Local |
+| `jinaai/jina-embeddings-v5-text-small` | 1024 | Local |
+| `jinaai/jina-embeddings-v5-text-nano` | 768 | Local |
+| `text-embedding-ada-002` | 1536 | OpenAI |
+| `text-embedding-3-small` | 1536 | OpenAI |
+| `text-embedding-3-large` | 3072 | OpenAI |
+
+**Chunking strategies:** `tokens`, `characters`, `sections`, `semantic_chunks` (Danish-aware, recommended).
+
+#### Update an Index
+
 ```bash
 uv run python -m scripts.update_vector_indexes \
     --index-name my_index \
-    --batch-size 64
+    --batch-size 2048
 ```
 
-This will:
-- Detect new, modified, and deleted articles
-- Remove outdated embeddings
-- Generate and add new embeddings
-- Update metadata timestamps
+Detects new/modified/deleted articles and updates embeddings accordingly. Uses metadata stored at index creation time — no need to re-specify chunking or model parameters.
 
-### Synchronizing Articles from lex.dk
-
-The `sync_articles.py` script synchronizes articles from lex.dk sitemaps to the database:
+### Syncing Articles from lex.dk
 
 ```bash
 # Sync all encyclopedias
 uv run python -m scripts.sync_articles
 
-# Dry run to see what would change
+# Dry run (preview only)
 uv run python -m scripts.sync_articles --dry-run
 
-# Sync specific encyclopedias only
+# Specific encyclopedias
 uv run python -m scripts.sync_articles --encyclopedia-ids 14,15,18
 ```
 
-**Important behaviors:**
-- Deletions are skipped if not all sitemaps are fetched successfully (prevents accidental data loss)
+- Deletions are skipped if not all sitemaps fetched successfully (prevents data loss)
 - Vector indexes are automatically updated after article changes
-- Use `--dry-run` to preview changes without modifying the database
-
-### Running the API Server
-Start the FastAPI server:
-```bash
-make run
-```
-The server will be available at `http://0.0.0.0:8000`.
-
-### API Endpoints
-
-#### List Database Tables
-- **`GET /api/tables`**
-  - Returns a list of all tables in the database.
-  - Example response:
-    ```json
-    {
-      "tables": ["articles", "vector_index", "metadata"]
-    }
-    ```
-
-#### Filter Articles by Metadata
-- **`GET /api/articles`**
-  - Retrieve articles filtered by ID or full-text search query.
-  - Supports optional query parameters:
-    - `query`: Text-based search in article content.
-    - `ids`: Filter by article IDs (supports comma-separated string, JSON array, or repeated `ids` parameter).
-    - `limit`: Maximum number of results (1–100, default: 50).
-
-  **Examples:**
-  - By IDs only (comma-separated):
-    ```
-    GET /api/articles?ids=1,2,5
-    ```
-  - By IDs (repeated parameters):
-    ```
-    GET /api/articles?ids=1&ids=2&ids=5
-    ```
-  - By IDs and text search:
-    ```
-    GET /api/articles?query=Rundetårn&ids=1,2&limit=10
-    ```
-  - Full-text search only:
-    ```
-    GET /api/articles?query=Denmark
-    ```
-
-  **Response:**  
-  Returns structured search results including matched articles with metadata and scores.
-
-#### Vector Search
-- **`POST /api/vector-search/indexes/{index_name}/query`**
-  - Perform semantic search on a specific vector index.
-  - **Path Parameter:**
-    - `index_name`: Name of the vector index to search.
-  - **Request Body (JSON):**
-    ```json
-    {
-      "query_text": "What is the capital of Denmark?",
-      "top_k": 5
-    }
-    ```
-    - `query_text`: The search query (required).
-    - `top_k`: Number of top results to return (optional, default: 5).
-
-  **Example Request:**
-  ```http
-  POST /api/vector-search/indexes/article_embeddings/query
-  Content-Type: application/json
-
-  {
-    "query_text": "Scandinavian history",
-    "top_k": 3
-  }
-  ```
-
-  **Response:**  
-  Returns a list of semantically similar documents with metadata and similarity scores.
-
-#### List All Vector Indexes
-- **`GET /api/vector-search/indexes`**
-  - Retrieve metadata for all available vector indexes.
-  - Example response:
-    ```json
-    [
-      {
-        "index_name": "article_embeddings",
-        "embedding_model": "text-embedding-3-small",
-        "dimension": 1536,
-        "created_at": "2025-04-05T12:00:00Z"
-      }
-    ]
-    ```
-
-#### Get Metadata for a Specific Vector Index
-- **`GET /api/vector-search/indexes/{index_name}`**
-  - Retrieve metadata for a specific vector index.
-  - **Path Parameter:**
-    - `index_name`: The name of the vector index.
-  - Returns details such as model used, dimension, and creation timestamp.
-
----
-
-### API Documentation
-Once the server is running, access auto-generated API documentation at:
-- **Swagger UI:** `http://localhost:8000/docs`
-- **ReDoc:** `http://localhost:8000/redoc`
-
-The OpenAPI 3.1 specification is available at:
-```
-/openapi/openapi.yaml
-```
-
-You can generate clients in various languages using OpenAPI Generator:
-```bash
-openapi-generator-cli generate -i openapi/openapi.yaml -g <language> -o ./client
-```
-Replace `<language>` with your target (e.g., `python`, `typescript-fetch`, `java`).
 
 ## Development
 
-This project uses a `Makefile` to streamline development tasks:
+```bash
+make install              # Install dependencies
+make install-dev          # Install with dev dependencies
+make run                  # Start API server
+make run-dev              # Start with OpenAPI spec generation
+make lint                 # Format + fix with Ruff
+make lint-check           # Check formatting/linting (no fix)
+make static-type-check    # Mypy type checking
+make test                 # Run pytest
+make pr                   # All pre-PR checks
+make generate-openapi-schema  # Write OpenAPI spec to openapi/openapi.yaml
+```
 
-| Command                 | Description |
-|-------------------------|-----------|
-| `make install`          | Install dependencies |
-| `make run`              | Start the API server |
-| `make lint`             | Format code and fix lint issues (using Ruff) |
-| `make lint-check`       | Check formatting and linting without applying fixes |
-| `make static-type-check`| Run static type checking with Mypy |
-| `make test`             | Run tests using Pytest |
-| `make pr`               | Run all pre-PR checks (linting, type checking, testing) |
-| `make help`             | Show all available commands |
+## Project Structure
+
+```
+├── main.py                  # FastAPI app entry point
+├── generate_openapi.py      # OpenAPI spec generator
+├── pyproject.toml           # Dependencies & tool config
+├── Makefile
+├── .env.example             # Environment template
+├── db/
+│   ├── schema.sql           # Metadata tables & triggers
+│   ├── migrate_articles.load # pgloader config
+│   └── run_migration.sh     # SQLite→PostgreSQL migration
+├── openapi/
+│   └── openapi.yaml         # Generated OpenAPI 3.1 spec
+├── scripts/                 # Deployment scripts
+└── src/
+    ├── lex_db/
+    │   ├── api/routes.py    # API endpoints
+    │   ├── database.py      # DB connection pool & queries
+    │   ├── config.py        # Pydantic settings
+    │   ├── embeddings.py    # Model loading & embedding generation
+    │   ├── vector_store.py  # pgvector index CRUD & search
+    │   ├── advanced_search.py # HyDE, RRF fusion (partially deprecated)
+    │   ├── sitemap.py       # lex.dk sitemap parsing
+    │   └── utils.py         # Chunking, logging, markdown conversion
+    ├── scripts/             # CLI tools (sync, index management, etc.)
+    └── tests/               # Test suite
+```
 
 ## License
+
 N/A
