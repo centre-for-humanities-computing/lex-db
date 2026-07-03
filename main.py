@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Running DDL under concurrent requests causes "tuple concurrently updated".
     with pool.connection() as conn:
         from lex_db.vector_store import setup_vector_index_metadata_table
+
         setup_vector_index_metadata_table(conn)
     print("✓ Vector index metadata table ready")
 

@@ -305,7 +305,9 @@ def add_precomputed_embeddings_to_vector_index(
                 stats["errors"] += 1
                 continue
 
-            batch_data.append((Vector(embedding), int(article_id), int(chunk_idx), chunk_text))
+            batch_data.append(
+                (Vector(embedding), int(article_id), int(chunk_idx), chunk_text)
+            )
 
         except Exception as e:
             logger.error(
