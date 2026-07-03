@@ -8,6 +8,8 @@ from psycopg.rows import dict_row
 from contextlib import contextmanager
 from typing import Optional, Generator
 
+from pgvector.psycopg import register_vector
+
 from lex_db.config import get_settings
 from lex_db.sitemap import derive_encyclopedia_id, derive_permalink
 from lex_db.utils import convert_article_json_to_markdown, get_logger
@@ -16,6 +18,20 @@ logger = get_logger()
 
 # Global connection pool
 _connection_pool: ConnectionPool | None = None
+
+
+def reset_connection_pool() -> None:
+    """Reset the global connection pool.
+
+    Ensures each worker process gets its own connection pool.
+    With uvicorn's spawn-based multiprocessing, each worker starts fresh
+    so this is a no-op in normal operation, but serves as a safety net
+    if the start method is ever changed to fork.
+    """
+    global _connection_pool
+    if _connection_pool is not None:
+        _connection_pool.close()
+        _connection_pool = None
 
 
 def get_connection_pool() -> ConnectionPool:
@@ -28,6 +44,7 @@ def get_connection_pool() -> ConnectionPool:
             min_size=settings.DB_POOL_MIN_SIZE,
             max_size=settings.DB_POOL_MAX_SIZE,
             kwargs={"row_factory": dict_row},
+            configure=register_vector,
         )
     return _connection_pool
 

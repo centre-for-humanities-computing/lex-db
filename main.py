@@ -1,6 +1,5 @@
 """Main entry point for the Lex DB application."""
 
-import asyncio
 import os
 import multiprocessing
 import uvicorn
@@ -10,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from lex_db.config import get_settings
-from lex_db.database import get_db_info, get_connection_pool
+from lex_db.database import get_db_info, get_connection_pool, reset_connection_pool
 from lex_db.api.routes import router as api_router
 
 
@@ -19,25 +18,22 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Initialize database connection pool and preload embedding model on startup."""
+    """Initialize database connection pool and schema on startup."""
+    # When using multiple workers, each worker needs its own connection pool.
+    reset_connection_pool()
+
     # Initialize connection pool at startup
     pool = get_connection_pool()
     print(
         f"✓ Database connection pool initialized (min={settings.DB_POOL_MIN_SIZE}, max={settings.DB_POOL_MAX_SIZE})"
     )
 
-    # Preload the default embedding model so the first request doesn't pay
-    # the cold-start cost (model download/export/quantization).
-    try:
-        from lex_db.embeddings import EmbeddingModel, get_local_embedding_model
-
-        default_model = EmbeddingModel.LOCAL_MULTILINGUAL_E5_LARGE
-        print(f"⏳ Preloading embedding model: {default_model.value} ...")
-        # Run in a thread to avoid blocking the event loop during startup
-        await asyncio.to_thread(get_local_embedding_model, default_model)
-        print(f"✓ Embedding model preloaded: {default_model.value}")
-    except Exception as e:
-        print(f"⚠ Could not preload embedding model: {e}")
+    # Run one-time DDL setup (idempotent) so it doesn't run on every request.
+    # Running DDL under concurrent requests causes "tuple concurrently updated".
+    with pool.connection() as conn:
+        from lex_db.vector_store import setup_vector_index_metadata_table
+        setup_vector_index_metadata_table(conn)
+    print("✓ Vector index metadata table ready")
 
     yield
 

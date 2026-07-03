@@ -7,6 +7,7 @@ from psycopg import sql
 from typing import Any, Optional
 
 from pydantic import BaseModel
+from pgvector.psycopg import Vector
 from lex_db.utils import get_logger, split_document_into_chunks, ChunkingStrategy
 from lex_db.database import get_url_base
 from lex_db.embeddings import (
@@ -214,10 +215,10 @@ def add_chunks_to_vector_index(
         )
         return
 
-    # Prepare data for batch insert - pgvector accepts Python lists directly
+    # Prepare data for batch insert - convert to pgvector Vector objects
     insert_data = [
         (
-            embedding,  # pgvector handles list[float] -> vector conversion
+            Vector(embedding),
             int(article_id),
             int(chunk_id),
             chunk_text,
@@ -304,7 +305,7 @@ def add_precomputed_embeddings_to_vector_index(
                 stats["errors"] += 1
                 continue
 
-            batch_data.append((embedding, int(article_id), int(chunk_idx), chunk_text))
+            batch_data.append((Vector(embedding), int(article_id), int(chunk_idx), chunk_text))
 
         except Exception as e:
             logger.error(
@@ -420,6 +421,10 @@ def search_vector_index(
 
     embeddings = generate_embeddings(queries, model_choice=embedding_model)
 
+    # Convert to pgvector Vector objects so psycopg sends them as native
+    # PostgreSQL "vector" type rather than "double precision[]".
+    vectors = [Vector(e) for e in embeddings]
+
     # Build a single batched query: UNNEST all query vectors, then LATERAL
     # subquery to get top_k nearest neighbours per vector.
     result = db_conn.execute(
@@ -445,7 +450,7 @@ def search_vector_index(
             LEFT JOIN articles a ON vi.source_article_id = a.id
             ORDER BY q.idx, distance
         """).format(sql.Identifier(vector_index_name)),
-        (embeddings, top_k),
+        (vectors, top_k),
     )
 
     # Group results by query_idx
@@ -789,6 +794,15 @@ def create_vector_index_metadata_table(db_conn: Connection[Any]) -> None:
     db_conn.commit()
 
 
+def setup_vector_index_metadata_table(db_conn: Connection[Any]) -> None:
+    """One-time DDL setup for the vector index metadata table.
+
+    Call this at application startup. Running DDL under concurrent requests
+    causes PostgreSQL "tuple concurrently updated" errors.
+    """
+    create_vector_index_metadata_table(db_conn)
+
+
 def insert_vector_index_metadata(
     db_conn: Connection[Any],
     index_name: str,
@@ -851,7 +865,6 @@ def update_vector_index_metadata(
 
 def get_all_vector_index_metadata(db_conn: Connection[Any]) -> list[dict]:
     """Retrieve metadata for all vector indexes."""
-    create_vector_index_metadata_table(db_conn)
     rows = db_conn.execute("SELECT * FROM vector_index_metadata").fetchall()
     # rows are already dicts due to dict_row factory
     return [dict(row) for row in rows]  # type: ignore[call-overload]
@@ -859,7 +872,6 @@ def get_all_vector_index_metadata(db_conn: Connection[Any]) -> list[dict]:
 
 def get_vector_index_metadata(db_conn: Connection[Any], index_name: str) -> dict | None:
     """Retrieve metadata for a specific vector index."""
-    create_vector_index_metadata_table(db_conn)
     row = db_conn.execute(
         "SELECT * FROM vector_index_metadata WHERE index_name = %s", (index_name,)
     ).fetchone()
