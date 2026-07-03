@@ -321,7 +321,7 @@ def hybrid_search(
 
         # Only append FTS results if they exist
         if fts_results:
-            combined_results.append(fts_results)
+            combined_results.extend(fts_results)
 
         # Stage 2: Fusion (only needed if we have multiple result sets)
         if len(combined_results) == 1:
