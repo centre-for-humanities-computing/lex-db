@@ -134,50 +134,120 @@ def get_articles_by_ids(ids: list[int], limit: int = 50) -> SearchResults:
         return SearchResults(entries=[], total=0, limit=limit)
 
     with get_db_connection() as conn:
-        # Use PostgreSQL's ANY() operator with array parameter
-        # More efficient than IN with multiple placeholders
-        count_result = conn.execute(
-            "SELECT COUNT(*) as count FROM articles WHERE id = ANY(%s)",
-            [ids],
-        ).fetchone()
-        total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
-
-        rows = conn.execute(
-            """
-            SELECT id, xhtml_md, 0.0 as rank, permalink, headword, encyclopedia_id
-            FROM articles
-            WHERE id = ANY(%s)
-            LIMIT %s
-            """,
-            [ids, limit],
-        ).fetchall()  # type: ignore[misc]
-
-        entries = [
-            SearchResult(
-                id=row["id"],  # type: ignore[call-overload]
-                xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
-                rank=row["rank"],  # type: ignore[call-overload]
-                url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
-                title=row["headword"],  # type: ignore[call-overload]
-            )
-            for row in rows
-        ]
-        return SearchResults(
-            entries=entries,
-            total=total,
-            limit=limit,
-        )
+        return _get_articles_by_ids_on_conn(conn, ids, limit)
 
 
 def batch_search_lex_fts(queries: list[str], limit: int = 50) -> list[SearchResults]:
     """
-    Perform batch full-text search on lex entries using FTS5.
+    Perform batch full-text search on lex entries using PostgreSQL native FTS.
+
+    Reuses a single database connection for all queries instead of opening
+    a new connection per query.
     """
-    results = []
-    for query in queries:
-        result = search_lex_fts(query=query, limit=limit)
-        results.append(result)
-    return results
+    if not queries:
+        return []
+
+    with get_db_connection() as conn:
+        results = []
+        for query in queries:
+            result = _search_lex_fts_on_conn(conn, query=query, limit=limit)
+            results.append(result)
+        return results
+
+
+def _search_lex_fts_on_conn(
+    conn: Connection,
+    query: str,
+    ids: Optional[list[int]] = None,
+    limit: int = 50,
+) -> SearchResults:
+    """Internal: perform FTS on an already-open connection."""
+    # Handle empty query — delegate to the public function (opens its own conn)
+    if not query or not query.strip():
+        if ids:
+            return get_articles_by_ids(ids, limit=limit)
+        return SearchResults(entries=[], total=0, limit=limit)
+
+    # Build the WHERE clause
+    where_clause = "xhtml_md_tsv @@ plainto_tsquery('danish', %s)"
+    params: list = [query]
+
+    # Add ID filter if provided
+    if ids:
+        where_clause += " AND a.id = ANY(%s)"
+        params.append(ids)
+
+    # Count total matching results
+    count_result = conn.execute(
+        f"SELECT COUNT(*) as count FROM articles a WHERE {where_clause}", params
+    ).fetchone()
+    total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
+
+    # Get ranked results
+    rows = conn.execute(
+        f"""
+        SELECT 
+            a.id,
+            a.xhtml_md,
+            ts_rank(a.xhtml_md_tsv, plainto_tsquery('danish', %s)) as rank,
+            a.permalink,
+            a.headword,
+            a.encyclopedia_id
+        FROM articles a
+        WHERE {where_clause}
+        ORDER BY rank DESC
+        LIMIT %s
+        """,
+        [query] + params + [limit],
+    ).fetchall()  # type: ignore[misc]
+
+    entries = [
+        SearchResult(
+            id=row["id"],  # type: ignore[call-overload]
+            xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
+            rank=float(row["rank"]),  # type: ignore[call-overload]
+            url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
+            title=row["headword"],  # type: ignore[call-overload]
+        )
+        for row in rows
+    ]
+
+    return SearchResults(entries=entries, total=total, limit=limit)
+
+
+def _get_articles_by_ids_on_conn(
+    conn: Connection,
+    ids: list[int],
+    limit: int = 50,
+) -> SearchResults:
+    """Internal: fetch articles by IDs on an already-open connection."""
+    count_result = conn.execute(
+        "SELECT COUNT(*) as count FROM articles WHERE id = ANY(%s)",
+        [ids],
+    ).fetchone()
+    total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
+
+    rows = conn.execute(
+        """
+        SELECT id, xhtml_md, 0.0 as rank, permalink, headword, encyclopedia_id
+        FROM articles
+        WHERE id = ANY(%s)
+        LIMIT %s
+        """,
+        [ids, limit],
+    ).fetchall()  # type: ignore[misc]
+
+    entries = [
+        SearchResult(
+            id=row["id"],  # type: ignore[call-overload]
+            xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
+            rank=row["rank"],  # type: ignore[call-overload]
+            url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
+            title=row["headword"],  # type: ignore[call-overload]
+        )
+        for row in rows
+    ]
+    return SearchResults(entries=entries, total=total, limit=limit)
 
 
 def search_lex_fts(
@@ -194,62 +264,8 @@ def search_lex_fts(
     Returns:
         SearchResults with ranked entries
     """
-    # Handle empty query
-    if not query or not query.strip():
-        if ids:
-            return get_articles_by_ids(ids, limit=limit)
-        return SearchResults(entries=[], total=0, limit=limit)
-
     with get_db_connection() as conn:
-        # Build the WHERE clause
-        # Use plainto_tsquery for natural language queries (better for RAG)
-        # Automatically filters stop words and handles conversational queries
-        where_clause = "xhtml_md_tsv @@ plainto_tsquery('danish', %s)"
-        params: list = [query]
-
-        # Add ID filter if provided
-        if ids:
-            where_clause += " AND a.id = ANY(%s)"
-            params.append(ids)
-
-        # Count total matching results
-        count_result = conn.execute(
-            f"SELECT COUNT(*) as count FROM articles a WHERE {where_clause}", params
-        ).fetchone()
-        total = count_result["count"] if count_result else 0  # type: ignore[call-overload]
-
-        # Get ranked results
-        # ts_rank() scores results by relevance (higher = more relevant)
-        rows = conn.execute(
-            f"""
-            SELECT 
-                a.id,
-                a.xhtml_md,
-                ts_rank(a.xhtml_md_tsv, plainto_tsquery('danish', %s)) as rank,
-                a.permalink,
-                a.headword,
-                a.encyclopedia_id
-            FROM articles a
-            WHERE {where_clause}
-            ORDER BY rank DESC
-            LIMIT %s
-            """,
-            [query] + params + [limit],
-        ).fetchall()  # type: ignore[misc]
-
-        # Format results
-        entries = [
-            SearchResult(
-                id=row["id"],  # type: ignore[call-overload]
-                xhtml_md=row["xhtml_md"],  # type: ignore[call-overload]
-                rank=float(row["rank"]),  # type: ignore[call-overload]
-                url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"],  # type: ignore[call-overload]
-                title=row["headword"],  # type: ignore[call-overload]
-            )
-            for row in rows
-        ]
-
-        return SearchResults(entries=entries, total=total, limit=limit)
+        return _search_lex_fts_on_conn(conn, query=query, ids=ids, limit=limit)
 
 
 def fetch_article_timestamps() -> dict[int, datetime]:

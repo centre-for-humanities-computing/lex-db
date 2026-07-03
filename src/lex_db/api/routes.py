@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["lex-db"])
 @router.get(
     "/tables", operation_id="get_tables", summary="Get a list of tables in the database"
 )
-async def get_tables() -> dict[str, list[str]]:
+def get_tables() -> dict[str, list[str]]:
     """Get a list of tables in the database."""
     try:
         with db.get_db_connection() as conn:
@@ -85,9 +85,7 @@ class BatchFulltextSearchRequest(BaseModel):
     operation_id="vector_search",
     summary="Search a vector index for similar content to the query text",
 )
-async def vector_search(
-    index_name: str, request: VectorSearchRequest
-) -> VectorSearchResults:
+def vector_search(index_name: str, request: VectorSearchRequest) -> VectorSearchResults:
     """Search a vector index for similar content to the query text."""
     try:
         with db.get_db_connection() as conn:
@@ -121,7 +119,7 @@ async def vector_search(
     operation_id="batch_vector_search",
     summary="Batch search a vector index for similar content to multiple query texts",
 )
-async def batch_vector_search(
+def batch_vector_search(
     index_name: str, request: BatchVectorSearchRequest
 ) -> list[VectorSearchResults]:
     """Search a vector index for similar content to multiple query texts in batch."""
@@ -158,7 +156,7 @@ async def batch_vector_search(
     summary="[DEPRECATED] Hybrid search combining semantic and keyword search with RRF fusion. Use batch semantic and/or batch fulltext search instead.",
     deprecated=True,
 )
-async def hybrid_search(
+def hybrid_search(
     index_name: str, request: HybridSearchRequest
 ) -> advanced_search.HybridSearchResults:
     """Perform hybrid search using RRF fusion of semantic and keyword search."""
@@ -222,9 +220,7 @@ async def hybrid_search(
     summary="[DEPRECATED] HyDE search using LLM-generated hypothetical document. Use batch semantic search instead.",
     deprecated=True,
 )
-async def hyde_search(
-    index_name: str, request: VectorSearchRequest
-) -> VectorSearchResults:
+def hyde_search(index_name: str, request: VectorSearchRequest) -> VectorSearchResults:
     """Perform HyDE search: generate hypothetical document, embed it, and search."""
     try:
         logger.info(f"HyDE search on '{index_name}' for: {request.query_text}")
@@ -261,7 +257,7 @@ async def hyde_search(
     operation_id="batch_fulltext_search",
     summary="Batch fulltext search across vector index chunks",
 )
-async def batch_fulltext_search(
+def batch_fulltext_search(
     index_name: str,
     request: BatchFulltextSearchRequest,
 ) -> list[list[RetrievalResult]]:
@@ -279,17 +275,15 @@ async def batch_fulltext_search(
                     detail=f"Vector index '{index_name}' not found",
                 )
 
-            results_per_query: list[list[RetrievalResult]] = []
-            for query in request.queries:
-                results = search_fts_chunks(
-                    db_conn=conn,
-                    vector_index_name=index_name,
-                    queries=[query],
-                    top_k=request.top_k,
-                )
-                results_per_query.append(results)
+            # Single batched call instead of per-query loop
+            results = search_fts_chunks(
+                db_conn=conn,
+                vector_index_name=index_name,
+                queries=request.queries,
+                top_k=request.top_k,
+            )
 
-            return results_per_query
+            return results
 
     except ValueError as e:
         logger.error(f"Validation error in batch fulltext search: {str(e)}")
@@ -306,7 +300,7 @@ async def batch_fulltext_search(
     operation_id="get_articles",
     summary="An endpoint for filtering articles based on metadata such as id, text search, etc. Query parameters are used for filtering (e.g. GET /articles?query=Rundetårn, or GET /articles?ids=1&ids=2&ids=5)",
 )
-async def get_articles(
+def get_articles(
     request: Request,
     query: Optional[str] = Query(None, description="Text search in articles"),
     ids: Optional[str] = Query(
@@ -368,7 +362,7 @@ async def get_articles(
     operation_id="list_vector_indexes",
     summary="List all vector indexes and their metadata",
 )
-async def list_vector_indexes() -> list[dict]:
+def list_vector_indexes() -> list[dict]:
     """Return a list of all vector indexes and their metadata."""
     try:
         with db.get_db_connection() as conn:
@@ -385,7 +379,7 @@ async def list_vector_indexes() -> list[dict]:
     operation_id="get_vector_index",
     summary="Get metadata for a specific vector index",
 )
-async def get_vector_index(index_name: str) -> dict:
+def get_vector_index(index_name: str) -> dict:
     """Return metadata for a specific vector index."""
     try:
         with db.get_db_connection() as conn:
@@ -424,7 +418,7 @@ class BenchmarkEmbeddingsResponse(BaseModel):
     operation_id="benchmark_embeddings",
     summary="Benchmark embedding generation performance",
 )
-async def benchmark_embeddings(
+def benchmark_embeddings(
     request: BenchmarkEmbeddingsRequest,
 ) -> BenchmarkEmbeddingsResponse:
     """Benchmark embedding generation with configurable parameters."""

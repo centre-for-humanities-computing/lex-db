@@ -320,6 +320,7 @@ class TestSearchVectorIndex:
         # Mock search results
         search_rows = [
             {
+                "query_idx": 1,
                 "id": 1,
                 "source_article_id": 123,
                 "chunk_sequence_id": 0,

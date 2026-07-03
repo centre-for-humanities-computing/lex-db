@@ -403,7 +403,11 @@ def search_vector_index(
     embedding_model: EmbeddingModel,
     top_k: int = 5,
 ) -> list[VectorSearchResults]:
-    """Search a vector index for similar content using pgvector cosine similarity."""
+    """Search a vector index for similar content using pgvector cosine similarity.
+
+    Uses a single batched SQL query (UNNEST + LATERAL) instead of N sequential
+    round-trips, so latency is O(1) in the number of queries rather than O(N).
+    """
     # Accept both EmbeddingModel and string for embedding_model_choice
     if not isinstance(embedding_model, EmbeddingModel):
         try:
@@ -411,58 +415,72 @@ def search_vector_index(
         except Exception:
             raise ValueError(f"Unknown embedding model: {embedding_model}")
 
+    if not queries:
+        return []
+
     embeddings = generate_embeddings(queries, model_choice=embedding_model)
-    results = []
-    for query_vector in embeddings:
-        # pgvector query using cosine distance operator (<=>)
-        # JOIN with articles table to get url and title for each result
-        result = db_conn.execute(
-            sql.SQL("""
-                SELECT 
-                    vi.id,
-                    vi.source_article_id,
-                    vi.chunk_sequence_id,
-                    vi.chunk_text,
-                    vi.embedding <=> %s::vector AS distance,
-                    a.permalink,
-                    a.headword,
-                    a.encyclopedia_id,
-                    a.changed_at
-                FROM {} vi
-                LEFT JOIN articles a ON vi.source_article_id = a.id
-                ORDER BY vi.embedding <=> %s::vector
+
+    # Build a single batched query: UNNEST all query vectors, then LATERAL
+    # subquery to get top_k nearest neighbours per vector.
+    result = db_conn.execute(
+        sql.SQL("""
+            SELECT
+                q.idx AS query_idx,
+                vi.id,
+                vi.source_article_id,
+                vi.chunk_sequence_id,
+                vi.chunk_text,
+                vi.embedding <=> q.vec::vector AS distance,
+                a.permalink,
+                a.headword,
+                a.encyclopedia_id,
+                a.changed_at
+            FROM unnest(%s::vector[]) WITH ORDINALITY AS q(vec, idx)
+            CROSS JOIN LATERAL (
+                SELECT *
+                FROM {} vi_inner
+                ORDER BY vi_inner.embedding <=> q.vec::vector
                 LIMIT %s
-            """).format(sql.Identifier(vector_index_name)),
-            (query_vector, query_vector, top_k),
-        )
+            ) vi
+            LEFT JOIN articles a ON vi.source_article_id = a.id
+            ORDER BY q.idx, distance
+        """).format(sql.Identifier(vector_index_name)),
+        (embeddings, top_k),
+    )
 
-        results.append(result.fetchall())
+    # Group results by query_idx
+    rows = result.fetchall()
+    grouped: dict[int, list] = {}
+    for row in rows:
+        idx = row["query_idx"]  # type: ignore[call-overload]
+        grouped.setdefault(idx, []).append(row)
 
-    # Format results - note that results are dicts due to dict_row factory
-    collected_results = [
-        VectorSearchResults(
-            results=[
-                VectorSearchResult(
-                    id_in_index=res["id"],  # type: ignore[call-overload]
-                    source_article_id=str(res["source_article_id"]),  # type: ignore[call-overload]
-                    chunk_seq=res["chunk_sequence_id"],  # type: ignore[call-overload]
-                    chunk_text=res["chunk_text"],  # type: ignore[call-overload]
-                    distance=res["distance"],  # type: ignore[call-overload]
-                    url=get_url_base(int(res["encyclopedia_id"])) + res["permalink"]  # type: ignore[call-overload]
-                    if res["encyclopedia_id"] and res["permalink"]
-                    else None,
-                    title=res["headword"]  # type: ignore[call-overload]
-                    if res["headword"]
-                    else None,
-                    changed_at=res["changed_at"]  # type: ignore[call-overload]
-                    if res["changed_at"]
-                    else None,
-                )
-                for res in query_result
-            ]
+    collected_results = []
+    for i in range(len(queries)):
+        query_rows = grouped.get(i + 1, [])  # WITH ORDINALITY is 1-indexed
+        collected_results.append(
+            VectorSearchResults(
+                results=[
+                    VectorSearchResult(
+                        id_in_index=res["id"],  # type: ignore[call-overload]
+                        source_article_id=str(res["source_article_id"]),  # type: ignore[call-overload]
+                        chunk_seq=res["chunk_sequence_id"],  # type: ignore[call-overload]
+                        chunk_text=res["chunk_text"],  # type: ignore[call-overload]
+                        distance=res["distance"],  # type: ignore[call-overload]
+                        url=get_url_base(int(res["encyclopedia_id"])) + res["permalink"]  # type: ignore[call-overload]
+                        if res["encyclopedia_id"] and res["permalink"]
+                        else None,
+                        title=res["headword"]  # type: ignore[call-overload]
+                        if res["headword"]
+                        else None,
+                        changed_at=res["changed_at"]  # type: ignore[call-overload]
+                        if res["changed_at"]
+                        else None,
+                    )
+                    for res in query_rows
+                ]
+            )
         )
-        for query_result in results
-    ]
     return collected_results
 
 
@@ -484,12 +502,12 @@ def search_fts_chunks(
     vector_index_name: str,
     queries: list[str],
     top_k: int = 50,
-) -> list[RetrievalResult]:
+) -> list[list[RetrievalResult]]:
     """
     Search vector index chunks using PostgreSQL full-text search.
 
-    Uses the generated tsvector column (chunk_text_tsv) with Danish language
-    configuration for full-text search. Returns results ranked by ts_rank().
+    Uses a single batched SQL query (UNNEST + LATERAL) instead of N sequential
+    round-trips, so latency is O(1) in the number of queries rather than O(N).
 
     Args:
         db_conn: PostgreSQL database connection
@@ -498,61 +516,77 @@ def search_fts_chunks(
         top_k: Maximum number of results to return per query
 
     Returns:
-        List of RetrievalResult objects with id, article_id, chunk_sequence,
-        chunk_text, and score (ts_rank).
+        List of lists of RetrievalResult objects, one list per input query.
     """
     if not queries:
         return []
 
-    results: list[RetrievalResult] = []
+    # Filter out empty queries
+    non_empty = [q for q in queries if q and q.strip()]
+    if not non_empty:
+        return [[] for _ in queries]
 
-    for query in queries:
-        if not query or not query.strip():
-            continue
-
-        # Use plainto_tsquery for natural language queries
-        # It handles tokenization and Danish stemming automatically
-        # JOIN with articles table to get url and title for each result
-        result = db_conn.execute(
-            sql.SQL("""
-                SELECT
-                    vi.id,
-                    vi.source_article_id,
-                    vi.chunk_sequence_id,
-                    vi.chunk_text,
-                    ts_rank(vi.chunk_text_tsv, plainto_tsquery('danish', %s)) AS score,
-                    a.permalink,
-                    a.headword,
-                    a.encyclopedia_id,
-                    a.changed_at
-                FROM {} vi
-                LEFT JOIN articles a ON vi.source_article_id = a.id
-                WHERE vi.chunk_text_tsv @@ plainto_tsquery('danish', %s)
-                ORDER BY score DESC
+    # Single batched query: UNNEST all query strings, then LATERAL subquery
+    # to get top_k FTS matches per query.
+    result = db_conn.execute(
+        sql.SQL("""
+            SELECT
+                q.idx AS query_idx,
+                vi.id,
+                vi.source_article_id,
+                vi.chunk_sequence_id,
+                vi.chunk_text,
+                ts_rank(vi.chunk_text_tsv, plainto_tsquery('danish', q.txt)) AS score,
+                a.permalink,
+                a.headword,
+                a.encyclopedia_id,
+                a.changed_at
+            FROM unnest(%s::text[]) WITH ORDINALITY AS q(txt, idx)
+            CROSS JOIN LATERAL (
+                SELECT *
+                FROM {} vi_inner
+                WHERE vi_inner.chunk_text_tsv @@ plainto_tsquery('danish', q.txt)
+                ORDER BY ts_rank(vi_inner.chunk_text_tsv, plainto_tsquery('danish', q.txt)) DESC
                 LIMIT %s
-            """).format(sql.Identifier(vector_index_name)),
-            (query, query, top_k),
+            ) vi
+            LEFT JOIN articles a ON vi.source_article_id = a.id
+            ORDER BY q.idx, score DESC
+        """).format(sql.Identifier(vector_index_name)),
+        (non_empty, top_k),
+    )
+
+    # Group results by query_idx (1-indexed from WITH ORDINALITY)
+    grouped: dict[int, list[RetrievalResult]] = {}
+    for row in result.fetchall():
+        idx = row["query_idx"]  # type: ignore[call-overload]
+        grouped.setdefault(idx, []).append(
+            RetrievalResult(
+                id=row["id"],  # type: ignore[call-overload]
+                article_id=row["source_article_id"],  # type: ignore[call-overload]
+                chunk_sequence=row["chunk_sequence_id"],  # type: ignore[call-overload]
+                chunk_text=row["chunk_text"],  # type: ignore[call-overload]
+                score=row["score"],  # type: ignore[call-overload]
+                url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"]  # type: ignore[call-overload]
+                if row["encyclopedia_id"] and row["permalink"]
+                else None,
+                title=row["headword"]  # type: ignore[call-overload]
+                if row["headword"]
+                else None,
+                changed_at=row["changed_at"]  # type: ignore[call-overload]
+                if row["changed_at"]
+                else None,
+            )
         )
 
-        for row in result.fetchall():
-            results.append(
-                RetrievalResult(
-                    id=row["id"],  # type: ignore[call-overload]
-                    article_id=row["source_article_id"],  # type: ignore[call-overload]
-                    chunk_sequence=row["chunk_sequence_id"],  # type: ignore[call-overload]
-                    chunk_text=row["chunk_text"],  # type: ignore[call-overload]
-                    score=row["score"],  # type: ignore[call-overload]
-                    url=get_url_base(int(row["encyclopedia_id"])) + row["permalink"]  # type: ignore[call-overload]
-                    if row["encyclopedia_id"] and row["permalink"]
-                    else None,
-                    title=row["headword"]  # type: ignore[call-overload]
-                    if row["headword"]
-                    else None,
-                    changed_at=row["changed_at"]  # type: ignore[call-overload]
-                    if row["changed_at"]
-                    else None,
-                )
-            )
+    # Build result list matching input query order (including empty queries)
+    results: list[list[RetrievalResult]] = []
+    non_empty_idx = 0
+    for q in queries:
+        if q and q.strip():
+            non_empty_idx += 1
+            results.append(grouped.get(non_empty_idx, []))
+        else:
+            results.append([])
 
     return results
 

@@ -1,5 +1,7 @@
 """Configuration settings for Lex DB."""
 
+from functools import lru_cache
+
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,7 +31,10 @@ class Settings(BaseSettings):
 
     # Connection pooling
     DB_POOL_MIN_SIZE: int = 2
-    DB_POOL_MAX_SIZE: int = 10
+    DB_POOL_MAX_SIZE: int = 20  # Increased for multi-worker throughput
+
+    # Web server settings
+    WEB_CONCURRENCY: int = 0  # Number of uvicorn workers (0 = auto: CPU count)
 
     # Embedding model settings
     GPU_BATCH_SIZE: int = 64  # Batch size for GPU inference
@@ -66,6 +71,7 @@ class Settings(BaseSettings):
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
 
+@lru_cache
 def get_settings() -> Settings:
-    """Get application settings."""
+    """Get application settings (cached)."""
     return Settings()

@@ -877,14 +877,24 @@ def get_onnx_cache_dir() -> Path:
 
 # Module-level cache for loaded models
 _model_cache: dict[EmbeddingModel, dict] = {}
+_model_cache_lock = Lock()
 
 
 def get_local_embedding_model(model_choice: EmbeddingModel) -> dict:
     """Get a cached embedding model instance.
 
     Uses handlers to load models with appropriate settings for GPU or CPU inference.
+    Thread-safe: uses a lock to prevent duplicate model loads across threads/workers.
     """
-    if model_choice not in _model_cache:
+    # Fast path: model already cached
+    if model_choice in _model_cache:
+        return _model_cache[model_choice]
+
+    with _model_cache_lock:
+        # Double-check after acquiring lock
+        if model_choice in _model_cache:
+            return _model_cache[model_choice]
+
         handler = get_handler(model_choice)
 
         # Automatically detect GPU availability
