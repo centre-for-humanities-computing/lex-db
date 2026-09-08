@@ -247,12 +247,159 @@ def reconstruct_text(tokens: list[str]) -> str:
     return result
 
 
+# --- Article Metadata ("fact box") rewriting -------------------------------
+#
+# The metadata appendix is written at sync time by _format_metadata_appendix
+# and stored inside articles.xhtml_md. It is rewritten here, at chunk time,
+# rather than at the source, so that existing articles are fixed by a re-chunk
+# instead of a full re-fetch of the corpus from lex.dk.
+
+METADATA_SECTION_HEADING = "Article Metadata"
+
+# Fields carrying no retrievable information. The id and URL already reach the
+# LLM as separate fields, and the repeated Title is what made fact boxes
+# outrank the article content they belong to.
+METADATA_PLUMBING_FIELDS = frozenset(
+    {"Article ID", "Title", "URL", "Last Modified", "Additional Metadata"}
+)
+
+_METADATA_FIELD_RE = re.compile(r"\*\*([^*]+?):\*\*[ \t]*([^\n]*)")
+
+# Lex encodes an unknown day/month as zeros, e.g. "0.0.1723" for a year we only
+# know approximately. Rendering that as a day would be wrong.
+_YEAR_ONLY_DATE_RE = re.compile(r"^0\.0\.(\d{3,4})$")
+
+
+def _format_danish_date(value: str) -> str | None:
+    """Render a Lex date as a Danish date phrase, or None if unusable."""
+    value = value.strip()
+    if not value:
+        return None
+    year_only = _YEAR_ONLY_DATE_RE.match(value)
+    if year_only:
+        return f"i {year_only.group(1)}"
+    return f"den {value}"
+
+
+def _danish_life_sentence(title: str, fields: dict[str, str]) -> str | None:
+    """Express birth and death metadata as a Danish sentence.
+
+    The stored form ("**Death Date:** 22.12.1984") is unreachable from Danish:
+    a query for "død" cannot match the English key, and for many biographical
+    articles these dates appear nowhere in the prose. Danish stemming does
+    match "død" against "døde", so the sentence form makes them findable.
+    """
+    birth = _format_danish_date(fields.get("Birth Date", ""))
+    death = _format_danish_date(fields.get("Death Date", ""))
+    birthplace = fields.get("Birthplace", "").strip()
+    deathplace = fields.get("Place Of Death", "").strip()
+
+    if not (birth or death or birthplace or deathplace):
+        return None
+
+    clauses = []
+    if birth or birthplace:
+        parts = ["blev født"]
+        if birth:
+            parts.append(birth)
+        if birthplace:
+            parts.append(f"i {birthplace}")
+        clauses.append(" ".join(parts))
+    if death or deathplace:
+        parts = ["døde"]
+        if death:
+            parts.append(death)
+        if deathplace:
+            parts.append(f"i {deathplace}")
+        clauses.append(" ".join(parts))
+
+    return f"{title} " + " og ".join(clauses) + "."
+
+
+def rewrite_metadata_section(content: str, doc_title: str) -> str:
+    """Rewrite the metadata appendix into retrievable text.
+
+    Drops the plumbing block, keeps every remaining field, and prepends the
+    article title plus a Danish sentence for birth and death facts.
+
+    Returns "" when nothing but plumbing was present, so that fact boxes
+    carrying no information produce no chunk at all rather than a chunk
+    echoing the article title.
+    """
+    fields: dict[str, str] = {}
+    order: list[str] = []
+    for match in _METADATA_FIELD_RE.finditer(content):
+        key = match.group(1).strip()
+        value = match.group(2).strip().strip("-").strip()
+        if key in METADATA_PLUMBING_FIELDS or not value:
+            continue
+        if key not in fields:
+            order.append(key)
+        fields[key] = value
+
+    if not fields:
+        return ""
+
+    lines: list[str] = [doc_title] if doc_title else []
+    sentence = _danish_life_sentence(doc_title or "", fields)
+    if sentence:
+        lines.append(sentence)
+    lines.extend(f"{key}: {fields[key]}" for key in order)
+    return "\n".join(lines)
+
+
+def is_table_chunk(text: str) -> bool:
+    """Whether a finished chunk is tabular and needs context prepended.
+
+    Detection is by pipe count rather than the "| --- |" separator or a
+    leading "|", because:
+      - the separator row appears only in the FIRST chunk of a split table
+      - a leading "|" misses table chunks merged with preceding prose
+      - a leading "|" stops working once this function's caller prepends
+        the title and heading
+
+    Measured on the production index: 100% of chunks containing the separator
+    have >=4 pipes, versus 0.08% of chunks that do not.
+    """
+    return text.count("|") >= 4
+
+
+def _apply_chunk_context(
+    chunk: str,
+    doc_title: str,
+    section_heading: str,
+    is_first_chunk: bool,
+) -> str:
+    """Prepend locating context to a chunk.
+
+    Table chunks carry no indication of what they are about — a row like
+    "| 12,09 | Masai Russell, USA | 2026 |" shares no vocabulary with the
+    question it answers, so it is unreachable by both keyword and vector
+    search. Those chunks get the article title and section heading prepended.
+
+    Non-tabular chunks keep the pre-existing behaviour exactly.
+    """
+    if not chunk:
+        return chunk
+
+    if is_table_chunk(chunk):
+        prefix = " ".join(part for part in (doc_title, section_heading) if part)
+        return f"{prefix} {chunk}" if prefix else chunk
+
+    # Unchanged legacy behaviour for prose: only continuation fragments
+    # (those starting mid-sentence) inherit their heading.
+    if section_heading and chunk[0].islower() and is_first_chunk:
+        return section_heading + " " + chunk
+    return chunk
+
+
 def chunk_section(
     section_heading: str,
     section_text: str,
     min_chunk_size: int = 5,
     chunk_size: int = 250,
     overlap: int = 30,
+    doc_title: str = "",
 ) -> list[str]:
     """Split one section into chunks with overlap and size limits."""
     if not section_text.strip():
@@ -270,9 +417,7 @@ def chunk_section(
             return []
         if total_tokens < chunk_size:
             chunk = reconstruct_text([t for s in sentence_tokens for t in s])
-            if section_heading and chunk and chunk[0].islower():
-                chunk = section_heading + " " + chunk
-            return [chunk]
+            return [_apply_chunk_context(chunk, doc_title, section_heading, True)]
 
         chunks: list[str] = []
         current: list[list[str]] = []
@@ -282,14 +427,11 @@ def chunk_section(
             if count + sent_len >= chunk_size and count >= min_chunk_size:
                 chunk_tokens = [t for s in current for t in s]
                 chunk_text = reconstruct_text(chunk_tokens)
-                if (
-                    section_heading
-                    and chunk_text
-                    and chunk_text[0].islower()
-                    and not chunks
-                ):
-                    chunk_text = section_heading + " " + chunk_text
-                chunks.append(chunk_text)
+                chunks.append(
+                    _apply_chunk_context(
+                        chunk_text, doc_title, section_heading, not chunks
+                    )
+                )
 
                 # Overlap logic
                 overlap_sentences: list[list[str]] = []
@@ -311,14 +453,9 @@ def chunk_section(
         if current and count >= min_chunk_size:
             chunk_tokens = [t for s in current for t in s]
             chunk_text = reconstruct_text(chunk_tokens)
-            if (
-                section_heading
-                and chunk_text
-                and chunk_text[0].islower()
-                and not chunks
-            ):
-                chunk_text = section_heading + " " + chunk_text
-            chunks.append(chunk_text)
+            chunks.append(
+                _apply_chunk_context(chunk_text, doc_title, section_heading, not chunks)
+            )
 
         return chunks
 
@@ -352,11 +489,35 @@ def split_text_by_semantic_chunks(
     if not sections:
         return []
 
+    # The article title arrives as a level-1 heading ("# " + headword, added by
+    # vector_store.update_vector_index). Only the first section would otherwise
+    # see it — every later "##" heading replaces it — so capture it here and
+    # carry it into table chunks, which have no other way to say what they are.
+    doc_title = ""
+    for heading, _ in sections:
+        if heading.startswith("#") and not heading.startswith("##"):
+            doc_title = heading.lstrip("#").strip()
+            break
+
     all_chunks = []
     for heading, content in sections:
         clean_heading = heading.lstrip("#").strip() if heading else ""
+        if clean_heading == METADATA_SECTION_HEADING:
+            content = rewrite_metadata_section(content, doc_title)
+            if not content:
+                continue
+            # The rewritten text already opens with the article title, and
+            # "Article Metadata" is an English label with no retrieval value.
+            clean_heading = ""
         all_chunks.extend(
-            chunk_section(clean_heading, content, min_chunk_size, chunk_size, overlap)
+            chunk_section(
+                clean_heading,
+                content,
+                min_chunk_size,
+                chunk_size,
+                overlap,
+                doc_title=doc_title,
+            )
         )
 
     logger_instance.debug(f"Split into {len(all_chunks)} semantic chunks.")
