@@ -228,8 +228,22 @@ def split_text_by_sections_with_headings(md_text: str) -> list[tuple[str, str]]:
 
 
 def tokenize(text_input: str) -> list[str]:
-    """Tokenize text by splitting on whitespace."""
-    return text_input.split() if text_input else []
+    """Tokenize text by splitting on whitespace, keeping leading line breaks.
+
+    Newlines that open `text_input` are carried as a prefix on the first
+    token rather than emitted as a token of their own. The returned length is
+    therefore identical to ``text_input.split()``, which is what keeps every
+    chunk boundary in chunk_section exactly where it was before this change.
+    """
+    if not text_input:
+        return []
+    tokens = text_input.split()
+    if not tokens:
+        return []
+    leading = text_input[: len(text_input) - len(text_input.lstrip("\n"))]
+    if leading:
+        tokens[0] = leading + tokens[0]
+    return tokens
 
 
 def reconstruct_text(tokens: list[str]) -> str:
@@ -238,13 +252,51 @@ def reconstruct_text(tokens: list[str]) -> str:
         return ""
     NO_SPACE_BEFORE = {",", ".", "!", "?", ";", ":", ")", "]", "}", '"', "'"}
     NO_SPACE_AFTER = {"(", "[", "{", '"', "'"}
-    result = tokens[0]
+    result = tokens[0].lstrip("\n")
     for token in tokens[1:]:
-        if token in NO_SPACE_BEFORE or result[-1] in NO_SPACE_AFTER:
+        if token.startswith("\n"):
+            result += token
+        elif token in NO_SPACE_BEFORE or result[-1] in NO_SPACE_AFTER:
             result += token
         else:
             result += " " + token
     return result
+
+
+def split_sentences_preserving_lines(text: str) -> list[str]:
+    """Sentence-split `text` while recording where its line breaks were.
+
+    SENTENCE_SPLITTER discards newlines and returns one bare sentence per
+    line, which is what flattened every markdown table in the index onto a
+    single line: a 26-row table arrived at the LLM as pipe-delimited soup
+    whose only row boundary was a doubled "|".
+
+    Splitting per line first preserves the line structure. Each sentence that
+    opens a new line carries its newlines as a string prefix, which tokenize()
+    folds into the first token, so sentence and token counts are unchanged and
+    no chunk boundary moves.
+    """
+    if not text:
+        return []
+
+    sentences: list[str] = []
+    pending = ""
+    for line in text.split("\n"):
+        if not line.strip():
+            if sentences:
+                pending = "\n\n"
+            continue
+        for position, sentence in enumerate(SENTENCE_SPLITTER.split(text=line)):
+            if not sentence.strip():
+                continue
+            if not sentences:
+                sentences.append(sentence)
+            elif position == 0:
+                sentences.append((pending or "\n") + sentence)
+            else:
+                sentences.append(sentence)
+            pending = ""
+    return sentences
 
 
 # --- Article Metadata ("fact box") rewriting -------------------------------
@@ -384,7 +436,7 @@ def _apply_chunk_context(
 
     if is_table_chunk(chunk):
         prefix = " ".join(part for part in (doc_title, section_heading) if part)
-        return f"{prefix} {chunk}" if prefix else chunk
+        return f"{prefix}\n{chunk}" if prefix else chunk
 
     # Unchanged legacy behaviour for prose: only continuation fragments
     # (those starting mid-sentence) inherit their heading.
@@ -406,7 +458,7 @@ def chunk_section(
         return []
 
     try:
-        sentences = SENTENCE_SPLITTER.split(text=section_text)
+        sentences = split_sentences_preserving_lines(section_text)
         if not sentences:
             return []
 

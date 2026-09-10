@@ -403,7 +403,7 @@ class TestTableChunkContext:
         tables, _ = self._split(MARKDOWN_WITH_TABLE)
         assert tables, "expected at least one table chunk"
         for chunk in tables:
-            assert chunk.startswith(f"{ARTICLE_TITLE} {TABLE_HEADING} ")
+            assert chunk.startswith(f"{ARTICLE_TITLE} {TABLE_HEADING}\n")
 
     def test_table_chunk_retains_its_data(self) -> None:
         tables, _ = self._split(MARKDOWN_WITH_TABLE)
@@ -433,7 +433,7 @@ class TestTableChunkContext:
         )
         assert len(chunks) > 1, "fixture should produce a split table"
         for chunk in chunks:
-            assert chunk.startswith(f"{ARTICLE_TITLE} {TABLE_HEADING} ")
+            assert chunk.startswith(f"{ARTICLE_TITLE} {TABLE_HEADING}\n")
 
     def test_table_chunk_without_doc_title_still_gets_heading(self) -> None:
         chunks = chunk_section(
@@ -442,7 +442,25 @@ class TestTableChunkContext:
             doc_title="",
         )
         assert chunks
-        assert chunks[0].startswith(f"{TABLE_HEADING} ")
+        assert chunks[0].startswith(f"{TABLE_HEADING}\n")
+
+    def test_table_rows_stay_on_separate_lines(self) -> None:
+        """The regression guard for the flattening bug.
+
+        Every row used to arrive as one line of pipe-delimited soup, which is
+        how a neighbouring row's athlete drifted onto its neighbour's record.
+        """
+        table = (
+            "| Længde | Navn, nationalitet | År |\n"
+            "| 73,80 | Olga Kusenkova, Rusland | 1998 |\n"
+            "| 73,14 | Mihaela Melinte, Rumænien | 1997 |\n"
+            "| 73,10 | Olga Kusenkova, Rusland | 1997 |"
+        )
+        chunks = chunk_section(TABLE_HEADING, table, doc_title=ARTICLE_TITLE)
+        assert len(chunks) == 1
+        rows = [line for line in chunks[0].split("\n") if line.startswith("|")]
+        assert len(rows) == 4, rows
+        assert rows[2] == "| 73,14 | Mihaela Melinte, Rumænien | 1997 |"
 
     def test_legacy_lowercase_prose_behaviour_preserved(self) -> None:
         """Prose starting mid-sentence still inherits its heading, unchanged."""
