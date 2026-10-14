@@ -95,6 +95,7 @@ def main() -> None:
             host=host,
             port=port,
             reload=True,
+            timeout_keep_alive=30,
         )
     else:
         workers = settings.WEB_CONCURRENCY or multiprocessing.cpu_count()
@@ -103,6 +104,7 @@ def main() -> None:
             host=host,
             port=port,
             workers=workers,
+            timeout_keep_alive=30,
         )
 
 
