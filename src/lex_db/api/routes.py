@@ -23,6 +23,11 @@ logger = get_logger()
 router = APIRouter(prefix="/api", tags=["lex-db"])
 
 
+def _describe(e: Exception) -> str:
+    """Exception type plus message, so a 500 says what actually failed."""
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
 @router.get(
     "/tables", operation_id="get_tables", summary="Get a list of tables in the database"
 )
@@ -37,8 +42,8 @@ def get_tables() -> dict[str, list[str]]:
 
             return {"tables": tables}
     except Exception as e:
-        logger.error(f"Error getting tables: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        logger.exception(f"Error getting tables: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {_describe(e)}")
 
 
 class VectorSearchRequest(BaseModel):
@@ -109,9 +114,11 @@ def vector_search(index_name: str, request: VectorSearchRequest) -> VectorSearch
     except ValueError as e:
         logger.error(f"Validation error in vector search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in vector search: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+        logger.exception(f"Error in vector search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {_describe(e)}")
 
 
 @router.post(
@@ -145,9 +152,11 @@ def batch_vector_search(
     except ValueError as e:
         logger.error(f"Validation error in batch vector search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in batch vector search: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+        logger.exception(f"Error in batch vector search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {_describe(e)}")
 
 
 @router.post(
@@ -209,9 +218,13 @@ def hybrid_search(
     except ValueError as e:
         logger.error(f"Validation error in hybrid search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in hybrid search: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Hybrid search error: {str(e)}")
+        logger.exception(f"Error in hybrid search: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Hybrid search error: {_describe(e)}"
+        )
 
 
 @router.post(
@@ -247,9 +260,13 @@ def hyde_search(index_name: str, request: VectorSearchRequest) -> VectorSearchRe
     except ValueError as e:
         logger.error(f"Validation error in HyDE search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in HyDE search: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"HyDE search error: {str(e)}")
+        logger.exception(f"Error in HyDE search: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"HyDE search error: {_describe(e)}"
+        )
 
 
 @router.post(
@@ -288,10 +305,13 @@ def batch_fulltext_search(
     except ValueError as e:
         logger.error(f"Validation error in batch fulltext search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in batch fulltext search: {str(e)}")
+        logger.exception(f"Error in batch fulltext search: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Batch fulltext search error: {str(e)}"
+            status_code=500,
+            detail=f"Batch fulltext search error: {_describe(e)}",
         )
 
 
@@ -352,9 +372,11 @@ def get_articles(
     except ValueError as e:
         logger.error(f"Validation error in article search: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in article search: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+        logger.exception(f"Error in article search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search error: {_describe(e)}")
 
 
 @router.get(
@@ -368,9 +390,10 @@ def list_vector_indexes() -> list[dict]:
         with db.get_db_connection() as conn:
             return get_all_vector_index_metadata(conn)
     except Exception as e:
-        logger.error(f"Error listing vector indexes: {str(e)}")
+        logger.exception(f"Error listing vector indexes: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Error listing vector indexes: {str(e)}"
+            status_code=500,
+            detail=f"Error listing vector indexes: {_describe(e)}",
         )
 
 
@@ -392,9 +415,10 @@ def get_vector_index(index_name: str) -> dict:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting vector index metadata: {str(e)}")
+        logger.exception(f"Error getting vector index metadata: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Error getting vector index metadata: {str(e)}"
+            status_code=500,
+            detail=f"Error getting vector index metadata: {_describe(e)}",
         )
 
 
